@@ -1,0 +1,202 @@
+listeners:
+  - name: praxis
+    address: "127.0.0.1:8080"
+    filter_chains: [ingress, responses, execution]
+
+admin:
+  metrics_address: "127.0.0.1:9901"
+
+filter_chains:
+  - name: ingress
+    filters:
+      - filter: headers
+        request_remove: [authorization, x-api-key, x-auth-tenant, x-auth-user, x-authenticated-state-owner, x-user-ogx-key]
+
+      - filter: state_owner
+        mode: trusted_headers
+        tenant:
+          static: praxis-standalone
+        issuer:
+          static: urn:praxis:standalone
+        subject:
+          static: praxis-standalone
+
+      - filter: project_state_owner_headers
+        tenant_header: x-tenant-id
+        subject_header: x-user-id
+
+      - filter: ai_operation
+
+      - filter: openai_responses_request
+        initialize_state: false
+        on_invalid: continue
+        headers:
+          format: x-praxis-ai-format
+          model: x-praxis-ai-model
+          stream: x-praxis-ai-stream
+          mode: x-praxis-responses-mode
+
+      - filter: router
+        routes:
+          - path_prefix: /v1/files
+            cluster: ogx
+          - path_prefix: /v1/vector_stores
+            cluster: ogx
+          - path_prefix: /v1/conversations
+            cluster: managed-chat
+          - path_prefix: /v1/responses
+            cluster: managed-chat
+
+      - filter: headers
+        conditions:
+          - when:
+              bound_upstream:
+                application_provider: direct
+        branch_chains:
+          - name: ogx
+            rejoin: terminal
+            chains:
+              - name: ogx-dispatch
+                filters:
+                  - filter: load_balancer
+                    cluster_source: bound_upstream
+                    clusters:
+                      - name: ogx
+                        http:
+                          application_provider: direct
+                        endpoints:
+                          - "${OGX_ENDPOINT}"
+
+  - name: responses
+    conditions:
+      - unless:
+          bound_upstream:
+            application_provider: direct
+    filters:
+      - filter: openai_responses_request
+        on_invalid: reject
+        headers:
+          format: null
+          model: null
+          stream: null
+          mode: null
+
+      - filter: openai_tool_parse
+
+      - filter: openai_conversations
+        backend: sqlite
+        database_url: "sqlite:///var/lib/praxis/responses.db?mode=rwc"
+        conversations_table: openai_conversations
+        items_table: openai_conversation_items
+
+      # Stores run before IRR so the reverse response path persists composed SSE.
+      - filter: openai_responses_store
+        backend: sqlite
+        database_url: "sqlite:///var/lib/praxis/responses.db?mode=rwc"
+        responses_table: openai_responses
+        conversations_table: openai_conversations
+
+      - filter: openai_responses_rehydrate
+
+  - name: execution
+    filters:
+      - filter: static_response
+        status: 404
+        body: '{"error":{"message":"unsupported Responses operation","type":"invalid_request_error"}}'
+        headers:
+          - name: Content-Type
+            value: application/json
+        conditions:
+          - when:
+              path_prefix: /v1/responses
+          - unless:
+              path: /v1/responses
+
+      - filter: iterative_request_router
+        initial_step: inference
+        max_iterations: 8
+        timeout_ms: 360000
+        step_timeout_ms: 300000
+        max_response_bytes: 67108864
+        max_stream_response_bytes: 67108864
+        max_state_bytes: 136314880
+        steps:
+          - name: inference
+            filters:
+              - filter: project_state_owner_headers
+                tenant_header: x-tenant-id
+                subject_header: x-user-id
+
+              - filter: openai_stream_events
+                max_buffer_bytes: 67108864
+                max_events: 200000
+                timeout_secs: 600
+
+              - filter: openai_file_search_dispatch
+                vector_store_url: http://${OGX_ENDPOINT}
+                outbound_chain:
+                  name: ogx-search
+                  filters:
+                    - filter: project_state_owner_headers
+                      tenant_header: x-tenant-id
+                      subject_header: x-user-id
+                timeout_ms: 10000
+                max_response_bytes: 10485760
+                max_total_response_bytes: 67108864
+                max_state_bytes: 136314880
+                on_failure: closed
+
+              - filter: openai_agentic_loop
+                max_infer_iters: 7
+
+              - filter: headers
+                request_remove: [x-tenant-id, x-user-id]
+                request_set:
+                  - name: Host
+                    value: ${INFERENCE_HOST}
+                  - name: Content-Type
+                    value: application/json
+
+              - filter: load_balancer
+                cluster_source: bound_upstream
+                clusters:
+                  - name: managed-chat
+                    http:
+                      application_protocol: openai_chat_completions
+                      application_provider: managed
+                    endpoints: ["${INFERENCE_HOST}:${INFERENCE_PORT}"]
+                    tls:
+                      sni: ${INFERENCE_HOST}
+
+              - filter: credential_injection
+                clusters:
+                  - name: managed-chat
+                    header: Authorization
+                    env_var: OPENAI_API_KEY
+                    header_prefix: "Bearer "
+
+              - filter: openai_responses_to_chat_completions
+                max_rewritten_body_bytes: 33554432
+                max_emitted_sse_frame_bytes: 50331648
+                max_stream_events: 100000
+                stream_timeout_secs: 300
+
+              - filter: path_rewrite
+                replace:
+                  pattern: "^/v1/responses/?$"
+                  replacement: /v1/chat/completions
+                conditions:
+                  - when:
+                      path: /v1/responses
+                      methods: [POST]
+            on_result:
+              - filter: openai_agentic_loop
+                key: action
+                value: loop
+                next: inference
+              - default: true
+                done: true
+
+insecure_options:
+  allow_private_endpoints: true
+  allow_private_upstreams: true

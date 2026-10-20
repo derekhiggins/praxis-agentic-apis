@@ -1,0 +1,143 @@
+# Standalone Praxis
+
+Demonstration of the Responses API, Conversations, and agentic tool loop
+using standalone Praxis. Inference uses an OpenAI-compatible HTTPS Chat
+Completions backend. Files, Vector Stores, and hosted file search
+require an existing OGX deployment.
+
+This is an **unauthenticated, single-user preview, not for production**. All
+requests share the fixed owner `praxis-standalone`. The listener binds pod
+loopback and is accessed through port-forwarding. No public Route is configured.
+
+## Prerequisites
+
+- A Kubernetes/OpenShift cluster with the intended context selected in `oc`.
+- Bash, Helm, `oc`, Python 3 with PyYAML, and `envsubst` (GNU gettext).
+- An inference backend API key and a model supporting tool calls.
+- OGX with Files/Vector Stores, an embedding model, and a vector store provider.
+- Permission to install in the target namespace and manage NetworkPolicies in
+  the OGX namespace.
+
+OGX and inference backends are not installed by this repository.
+
+## Install
+
+Run these commands from the repository root. Select deployment settings before
+creating the Secret; exported settings also apply to deployment and tests:
+
+```bash
+export NAMESPACE=praxis-standalone
+export RELEASE=praxis-gateway
+export API_KEY_SECRET=openai
+export API_KEY_SECRET_KEY=OPENAI_API_KEY
+```
+
+Read the backend key interactively, or supply it through your secret manager.
+Create the namespace first so the Secret can be created before deployment.
+The installer also ensures the namespace exists. This creates or refreshes the
+Secret without writing the key to a local file:
+
+```bash
+set +x
+read -rsp 'Backend API key: ' OPENAI_API_KEY
+printf '\n'
+oc create namespace "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
+oc -n "$NAMESPACE" create secret generic "$API_KEY_SECRET" \
+  --from-file="$API_KEY_SECRET_KEY"=<(printf %s "$OPENAI_API_KEY") \
+  --dry-run=client -o yaml | oc apply --server-side -f -
+unset OPENAI_API_KEY
+
+bash ./scripts/deploy.sh
+```
+
+The installer ensures the Praxis namespace exists, then creates or updates
+NetworkPolicy `${RELEASE}-ogx` in the OGX
+namespace, then installs the published Helm chart. The policy permits this
+release's pods to reach the selected OGX pods on `OGX_PORT`. Existing policies
+are not edited; their allowed traffic remains allowed. Adding an ingress policy
+can restrict previously unisolated OGX pods, so review the target labels first.
+
+See [configuration](docs/configuration.md) for deployment settings, selecting
+multiple configs, the pinned chart/image, and storage/upgrade behavior.
+
+The default config is `configs/openai-ogx/`, with shared Helm defaults in
+`configs/common-values.yaml`. Select another directory with `CONFIG_DIR`:
+
+```bash
+CONFIG_DIR=configs/openai-ogx bash ./scripts/deploy.sh
+```
+
+## Verify and access
+
+```bash
+oc -n "$NAMESPACE" rollout status "deployment/$RELEASE"
+oc -n "$NAMESPACE" port-forward "deployment/$RELEASE" 8080:8080
+```
+
+In another terminal:
+
+```bash
+curl -fsS http://127.0.0.1:8080/v1/conversations \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+Delete test conversations through `DELETE /v1/conversations/<id>` when finished.
+Stop port-forward with Ctrl-C. View logs with:
+
+```bash
+oc -n "$NAMESPACE" logs "deployment/$RELEASE"
+```
+
+## Test
+
+Requires `curl` and `jq` in addition to the deployment tools. Run the smoke test
+first; it checks health and Conversation create/update/read/delete without
+inference calls:
+
+```bash
+bash ./tests/smoke.sh
+```
+
+The functional tests make four paid Responses requests, normally six inference
+calls, plus OGX indexing and search. Set model/provider names to match your
+existing backends:
+
+```bash
+MODEL=gpt-6-luna \
+EMBEDDING_MODEL=vllm-embedding/Nomic-embed-text-v2-moe \
+VECTOR_STORE_PROVIDER=milvus-remote \
+bash ./tests/responses.sh
+```
+
+The shown names are also the defaults. Both tests use `NAMESPACE` and `RELEASE`
+from the environment and automatically start localhost-only port-forwards:
+
+| Local port | Pod port | Purpose |
+| --- | --- | --- |
+| `18080` | `8080` | Praxis API requests |
+| `19901` | `9901` | Admin `/healthy` check |
+
+These are temporary local tunnels, not public endpoints. Run the tests separately
+and keep those local ports free. They do not use the manual port-forward on 8080.
+The functional test checks Conversations,
+buffered/streaming Responses, stored response retrieval, previous-response
+history, Files, Vector Store indexing/search, and hosted file-search loops.
+It requests `reasoning.effort=none`; use a model accepting that option.
+
+Tests delete resources they create and stop port-forwarding on exit, including
+on failure. Check cleanup errors for resources needing manual deletion. Request
+and response artifacts remain in `.cache/` and should not be committed.
+
+## Uninstall
+
+Use the same `NAMESPACE`, `RELEASE`, and `OGX_NAMESPACE` settings and cluster
+context as installation:
+
+```bash
+bash ./scripts/cleanup.sh
+```
+
+This removes the Helm release and its OGX NetworkPolicy, discarding SQLite
+state. It is safe to rerun when either resource is already absent. The namespace,
+credential Secret, existing OGX deployment, and local `.cache/` artifacts remain
+in place. Files and Vector Stores stored in OGX are not deleted.

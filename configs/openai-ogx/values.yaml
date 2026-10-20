@@ -1,0 +1,6 @@
+env:
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: openai
+        key: OPENAI_API_KEY

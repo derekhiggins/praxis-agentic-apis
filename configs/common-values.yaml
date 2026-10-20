@@ -1,0 +1,22 @@
+image:
+  repository: ghcr.io/praxis-proxy/ai
+  tag: "0.7.0"
+  digest: sha256:550661eea7e392a9f4415b836e0b2393299f26856bc02cbbc8d3301d49b759f3
+
+health:
+  readiness:
+    tcpSocket: null
+    exec:
+      command: [wget, -qO-, http://127.0.0.1:9901/healthy]
+  liveness:
+    tcpSocket: null
+    exec:
+      command: [wget, -qO-, http://127.0.0.1:9901/healthy]
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
