@@ -16,6 +16,7 @@ OGX_INSTANCE_LABEL=${OGX_INSTANCE_LABEL:-ogx-distribution}
 export OGX_ENDPOINT=${OGX_ENDPOINT:-$OGX_SERVICE.$OGX_NAMESPACE.svc.cluster.local:$OGX_PORT}
 export INFERENCE_HOST=${INFERENCE_HOST:-api.openai.com}
 export INFERENCE_PORT=${INFERENCE_PORT:-443}
+export MCP_SERVER_URL=${MCP_SERVER_URL:-http://mcp-test:3001/mcp}
 
 for tool in oc helm python3 envsubst; do
   command -v "$tool" >/dev/null
@@ -24,7 +25,7 @@ python3 -c 'import yaml'
 [[ -r "$CONFIG_FILE" && -r "$CONFIG_DIR/values.yaml" && -r "$VALUES_FILE" ]]
 WORK=$(mktemp -d)
 trap 'rm -f "$WORK/config.yaml"; rmdir "$WORK"' EXIT
-envsubst "\${OGX_ENDPOINT} \${INFERENCE_HOST} \${INFERENCE_PORT}" <"$CONFIG_FILE" >"$WORK/config.yaml"
+envsubst "\${OGX_ENDPOINT} \${INFERENCE_HOST} \${INFERENCE_PORT} \${MCP_SERVER_URL}" <"$CONFIG_FILE" >"$WORK/config.yaml"
 
 oc create namespace "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
 

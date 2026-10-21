@@ -5,6 +5,7 @@
 - [ ] Architecture overview showing Praxis, OGX, inference, and request flow.
 - [ ] PostgreSQL-backed Responses and Conversations storage.
 - [ ] Web search in the agentic loop.
-- [ ] MCP tool discovery and execution.
+- [x] MCP tool discovery and execution.
+- [ ] Integrate with the RHOAI MCP catalogue.
 - [ ] Conversation context compaction.
 - [ ] CI for demo validation and tests.
