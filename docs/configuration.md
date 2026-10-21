@@ -53,9 +53,10 @@ directory's `values.yaml`, then `VALUES_FILE`. Later values take precedence.
 resource name to `RELEASE` and overrides the first environment entry's Secret
 reference; retain `OPENAI_API_KEY` as that entry when overriding `env`.
 
-Pipeline files can use `${OGX_ENDPOINT}`, `${INFERENCE_HOST}`, and
-`${INFERENCE_PORT}`. Only these placeholders are substituted before deployment;
-other dollar signs are preserved. Keep credentials in Secrets, not config files.
+Pipeline files can use `${OGX_ENDPOINT}`, `${INFERENCE_HOST}`,
+`${INFERENCE_PORT}`, and `${MCP_SERVER_URL}`. Only these placeholders are
+substituted before deployment; other dollar signs are preserved.
+Keep credentials in Secrets, not config files.
 Alternate configs must retain the API listener on `0.0.0.0:8080`, admin listener on
 `127.0.0.1:9901`, and SQLite path under `/var/lib/praxis` to use the existing access, probes,
 tests, and storage setup unchanged. OGX remains a prerequisite for the installer.
