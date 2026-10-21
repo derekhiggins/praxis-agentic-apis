@@ -100,7 +100,7 @@ filter_chains:
 
       - filter: openai_mcp_tool_resolve
         connectors:
-          - id: test-mcp
+          - id: mcp-server
             server_url: "${MCP_SERVER_URL}"
 
   - name: execution

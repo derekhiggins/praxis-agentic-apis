@@ -16,6 +16,7 @@ Set these environment variables before running `scripts/deploy.sh`:
 | `WEB_SEARCH_API_KEY_SECRET_KEY` | `WEB_SEARCH_API_KEY` | Key within the Brave Secret |
 | `INFERENCE_HOST` | `api.openai.com` | HTTPS backend hostname and TLS SNI |
 | `INFERENCE_PORT` | `443` | HTTPS backend port |
+| `MCP_SERVER_URL` | `http://mcp-test:3001/mcp` | MCP server for the `mcp-server` connector; set `http://openshift-mcp:8080/mcp` for the OpenShift MCP server |
 | `OGX_NAMESPACE` | `redhat-ods-applications` | Existing OGX namespace |
 | `OGX_SERVICE` | `ogx-distribution-service` | Existing OGX Service |
 | `OGX_PORT` | `8321` | OGX HTTP and NetworkPolicy port |

@@ -98,6 +98,36 @@ back to the model through the agentic loop. To disable search, redeploy without
 `ENABLE_WEB_SEARCH=true`; the Secret is left in place. Redeploying replaces the
 pod and discards SQLite state.
 
+### MCP server
+
+Praxis has one MCP connector, `mcp-server`, pointing at `MCP_SERVER_URL`.
+Requests use
+`tools: [{"type":"mcp","server_label":"<label>","connector_id":"mcp-server","require_approval":"never"}]`.
+Deploy one of these servers in `$NAMESPACE`:
+
+- Test server (default URL), used by `tests/mcp.sh`:
+
+  ```bash
+  oc -n "$NAMESPACE" apply -f infra/mcp/everything/deployment.yaml
+  bash ./scripts/deploy.sh
+  ```
+
+- OpenShift MCP Server from the RHOAI MCP catalogue, deployed through the MCP
+  Lifecycle Operator (requires the `mcplifecycleoperator` DataScienceCluster
+  component to be `Managed`):
+
+  ```bash
+  oc -n "$NAMESPACE" apply -f infra/mcp/openshift/mcpserver.yaml
+  oc -n "$NAMESPACE" wait mcpserver/openshift-mcp --for=condition=Verified --timeout=300s
+  MCP_SERVER_URL=http://openshift-mcp:8080/mcp bash ./scripts/deploy.sh
+  ```
+
+  It runs read-only with the `core` toolset and a ServiceAccount bound to `view`
+  in `$NAMESPACE` only, so it can read pods, logs, events, and resources there
+  but not Secrets or other namespaces. Its NetworkPolicy admits only Praxis pods
+  and the operator in `redhat-ods-applications`. Anyone who can reach Praxis can
+  read `$NAMESPACE` through it.
+
 ## Verify and access
 
 ```bash

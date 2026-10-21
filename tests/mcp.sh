@@ -55,7 +55,7 @@ for stream in false true; do
   REQUEST=$(jq -nc --arg model "$MODEL" --arg code "$CODE" --argjson stream "$stream" '
     {model:$model,reasoning:{effort:"none"},store:true,max_output_tokens:256,stream:$stream,
      input:("Call the echo tool with message " + $code + ". Reply with its result."),
-     tools:[{type:"mcp",server_label:"everything",connector_id:"test-mcp",
+     tools:[{type:"mcp",server_label:"everything",connector_id:"mcp-server",
              allowed_tools:["echo"],require_approval:"never"}]}')
   api /v1/responses -H 'Content-Type: application/json' -d "$REQUEST" >"$WORK/response-$stream.raw"
   if [[ $stream == true ]]; then
