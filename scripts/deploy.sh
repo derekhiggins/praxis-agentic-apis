@@ -32,6 +32,24 @@ oc apply -f - <<YAML
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: ${RELEASE}-ingress
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: praxis-gateway
+      app.kubernetes.io/instance: "${RELEASE}"
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: ${RELEASE}-ogx
   namespace: ${OGX_NAMESPACE}
 spec:

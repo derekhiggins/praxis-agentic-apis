@@ -6,8 +6,8 @@ Completions backend. Files, Vector Stores, and hosted file search
 require an existing OGX deployment.
 
 This is an **unauthenticated, single-user preview, not for production**. All
-requests share the fixed owner `praxis-standalone`. The listener binds pod
-loopback and is accessed through port-forwarding. No public Route is configured.
+requests share the fixed owner `praxis-standalone`. The API is accessible from
+pods in its namespace or through port-forwarding. No public Route is configured.
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ loopback and is accessed through port-forwarding. No public Route is configured.
 - An inference backend API key and a model supporting tool calls.
 - OGX with Files/Vector Stores, an embedding model, and a vector store provider.
 - Permission to install in the target namespace and manage NetworkPolicies in
-  the OGX namespace.
+  both the target and OGX namespaces.
 
 OGX and inference backends are not installed by this repository.
 
@@ -51,11 +51,16 @@ bash ./scripts/deploy.sh
 ```
 
 The installer ensures the Praxis namespace exists, then creates or updates
-NetworkPolicy `${RELEASE}-ogx` in the OGX
-namespace, then installs the published Helm chart. The policy permits this
-release's pods to reach the selected OGX pods on `OGX_PORT`. Existing policies
-are not edited; their allowed traffic remains allowed. Adding an ingress policy
-can restrict previously unisolated OGX pods, so review the target labels first.
+NetworkPolicies before installing the published Helm chart:
+- `${RELEASE}-ingress` allows only same-namespace pods to reach this release's
+  Praxis pods on port 8080. Egress is unchanged; port-forwarding remains available.
+- `${RELEASE}-ogx` permits this release's pods to reach the selected OGX pods
+  on `OGX_PORT` in the OGX namespace.
+
+Existing policies are not edited; their allowed traffic remains allowed. Adding
+an ingress policy can restrict previously unisolated pods, so review the target
+labels first. Namespace isolation is not authentication: all allowed callers
+share the same Praxis identity and data.
 
 See [configuration](docs/configuration.md) for deployment settings, selecting
 multiple configs, the pinned chart/image, and storage/upgrade behavior.

@@ -56,8 +56,8 @@ reference; retain `OPENAI_API_KEY` as that entry when overriding `env`.
 Pipeline files can use `${OGX_ENDPOINT}`, `${INFERENCE_HOST}`, and
 `${INFERENCE_PORT}`. Only these placeholders are substituted before deployment;
 other dollar signs are preserved. Keep credentials in Secrets, not config files.
-Alternate configs must retain the loopback listener on 8080, admin listener on
-9901, and SQLite path under `/var/lib/praxis` to use the existing access, probes,
+Alternate configs must retain the API listener on `0.0.0.0:8080`, admin listener on
+`127.0.0.1:9901`, and SQLite path under `/var/lib/praxis` to use the existing access, probes,
 tests, and storage setup unchanged. OGX remains a prerequisite for the installer.
 
 ## Chart and image
