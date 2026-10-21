@@ -4,7 +4,7 @@
 - [ ] Validate a real client/harness end to end and document its configuration.
 - [ ] Architecture overview showing Praxis, OGX, inference, and request flow.
 - [ ] PostgreSQL-backed Responses and Conversations storage.
-- [ ] Web search in the agentic loop.
+- [x] Web search in the agentic loop.
 - [x] MCP tool discovery and execution.
 - [ ] Integrate with the RHOAI MCP catalogue.
 - [ ] Conversation context compaction.

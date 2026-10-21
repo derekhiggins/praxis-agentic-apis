@@ -11,6 +11,9 @@ Set these environment variables before running `scripts/deploy.sh`:
 | `VALUES_FILE` | `${CONFIG_DIR}/values.yaml` | Helm values override file |
 | `API_KEY_SECRET` | `openai` | Namespace-local backend credential Secret |
 | `API_KEY_SECRET_KEY` | `OPENAI_API_KEY` | Key within that Secret |
+| `ENABLE_WEB_SEARCH` | `false` | Enable Brave web search (`true` or `false`) |
+| `WEB_SEARCH_API_KEY_SECRET` | `brave-search` | Namespace-local Brave credential Secret; required only when web search is enabled |
+| `WEB_SEARCH_API_KEY_SECRET_KEY` | `WEB_SEARCH_API_KEY` | Key within the Brave Secret |
 | `INFERENCE_HOST` | `api.openai.com` | HTTPS backend hostname and TLS SNI |
 | `INFERENCE_PORT` | `443` | HTTPS backend port |
 | `OGX_NAMESPACE` | `redhat-ods-applications` | Existing OGX namespace |
@@ -51,7 +54,8 @@ Helm values are loaded in order: `configs/common-values.yaml`, the selected
 directory's `values.yaml`, then `VALUES_FILE`. Later values take precedence.
 `CONFIG_FILE` replaces the selected directory's pipeline. The installer sets the
 resource name to `RELEASE` and overrides the first environment entry's Secret
-reference; retain `OPENAI_API_KEY` as that entry when overriding `env`.
+reference; retain `OPENAI_API_KEY` as that entry when overriding `env`. With web
+search enabled, the installer reserves the second entry for `WEB_SEARCH_API_KEY`.
 
 Pipeline files can use `${OGX_ENDPOINT}`, `${INFERENCE_HOST}`,
 `${INFERENCE_PORT}`, and `${MCP_SERVER_URL}`. Only these placeholders are
@@ -60,6 +64,24 @@ Keep credentials in Secrets, not config files.
 Alternate configs must retain the API listener on `0.0.0.0:8080`, admin listener on
 `127.0.0.1:9901`, and SQLite path under `/var/lib/praxis` to use the existing access, probes,
 tests, and storage setup unchanged. OGX remains a prerequisite for the installer.
+
+## Web search
+
+`ENABLE_WEB_SEARCH=true` retains the default pipeline's
+`openai_web_search_dispatch` filter and injects `WEB_SEARCH_API_KEY` from the
+selected Kubernetes Secret. The installer fails if the Secret or a nonempty key
+is missing. The shared key is used only for Brave provider callouts.
+
+When disabled, the installer removes web-search dispatch filters and does not
+add the search credential environment entry. No Brave Secret is needed. Custom
+pipelines must include the dispatcher to support search when enabled. Don't add
+`WEB_SEARCH_API_KEY` to `env` in values files.
+
+See the [setup instructions](../README.md#optional-web-search) for Secret creation.
+Requests use `tools: [{"type":"web_search"}]`; use
+`tool_choice: {"type":"web_search"}` to require an initial search, and
+`include: ["web_search_call.action.sources"]` to return source URLs. Search runs
+before MCP and file-search dispatch inside the existing iterative router.
 
 ## Chart and image
 

@@ -4,6 +4,7 @@ Demonstration of the Responses API, Conversations, and agentic tool loop
 using standalone Praxis. Inference uses an OpenAI-compatible HTTPS Chat
 Completions backend. Files, Vector Stores, and hosted file search
 require an existing OGX deployment.
+Optional hosted web search uses Brave Search.
 
 This is an **unauthenticated, single-user preview, not for production**. All
 requests share the fixed owner `praxis-standalone`. The API is accessible from
@@ -72,6 +73,31 @@ The default config is `configs/openai-ogx/`, with shared Helm defaults in
 CONFIG_DIR=configs/openai-ogx bash ./scripts/deploy.sh
 ```
 
+### Optional web search
+
+Web search is disabled by default. To enable it, create a namespace-local Secret
+with your Brave Search API key, then deploy with `ENABLE_WEB_SEARCH=true`:
+
+```bash
+export WEB_SEARCH_API_KEY_SECRET=brave-search
+export WEB_SEARCH_API_KEY_SECRET_KEY=WEB_SEARCH_API_KEY
+set +x
+read -rsp 'Brave Search API key: ' WEB_SEARCH_API_KEY
+printf '\n'
+oc -n "$NAMESPACE" create secret generic "$WEB_SEARCH_API_KEY_SECRET" \
+  --from-file="$WEB_SEARCH_API_KEY_SECRET_KEY"=<(printf %s "$WEB_SEARCH_API_KEY") \
+  --dry-run=client -o yaml | oc apply --server-side -f -
+unset WEB_SEARCH_API_KEY
+
+ENABLE_WEB_SEARCH=true bash ./scripts/deploy.sh
+```
+
+All callers share this key and its billing account. Requests opt into search with
+`tools: [{"type":"web_search"}]`. Praxis executes Brave searches and feeds results
+back to the model through the agentic loop. To disable search, redeploy without
+`ENABLE_WEB_SEARCH=true`; the Secret is left in place. Redeploying replaces the
+pod and discards SQLite state.
+
 ## Verify and access
 
 ```bash
@@ -128,6 +154,16 @@ The functional test checks Conversations,
 buffered/streaming Responses, stored response retrieval, previous-response
 history, Files, Vector Store indexing/search, and hosted file-search loops.
 It requests `reasoning.effort=none`; use a model accepting that option.
+
+With web search enabled, run the separate paid test:
+
+```bash
+MODEL=gpt-6-luna bash ./tests/web-search.sh
+```
+
+It makes two Responses requests, normally four inference calls, plus Brave
+searches. It checks buffered/streaming search loops, returned source URLs, and
+stored response retrieval. It uses the same local ports as the other tests.
 
 Tests delete resources they create and stop port-forwarding on exit, including
 on failure. Check cleanup errors for resources needing manual deletion. Request

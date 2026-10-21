@@ -8,6 +8,9 @@ CONFIG_FILE=${CONFIG_FILE:-$CONFIG_DIR/config.yaml}
 VALUES_FILE=${VALUES_FILE:-$CONFIG_DIR/values.yaml}
 API_KEY_SECRET=${API_KEY_SECRET:-openai}
 API_KEY_SECRET_KEY=${API_KEY_SECRET_KEY:-OPENAI_API_KEY}
+ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-false}
+WEB_SEARCH_API_KEY_SECRET=${WEB_SEARCH_API_KEY_SECRET:-brave-search}
+WEB_SEARCH_API_KEY_SECRET_KEY=${WEB_SEARCH_API_KEY_SECRET_KEY:-WEB_SEARCH_API_KEY}
 OGX_NAMESPACE=${OGX_NAMESPACE:-redhat-ods-applications}
 OGX_SERVICE=${OGX_SERVICE:-ogx-distribution-service}
 OGX_PORT=${OGX_PORT:-8321}
@@ -22,12 +25,49 @@ for tool in oc helm python3 envsubst; do
   command -v "$tool" >/dev/null
 done
 python3 -c 'import yaml'
+[[ $ENABLE_WEB_SEARCH == true || $ENABLE_WEB_SEARCH == false ]] || {
+  echo 'ENABLE_WEB_SEARCH must be true or false' >&2
+  exit 1
+}
 [[ -r "$CONFIG_FILE" && -r "$CONFIG_DIR/values.yaml" && -r "$VALUES_FILE" ]]
 WORK=$(mktemp -d)
 trap 'rm -f "$WORK/config.yaml"; rmdir "$WORK"' EXIT
 envsubst "\${OGX_ENDPOINT} \${INFERENCE_HOST} \${INFERENCE_PORT} \${MCP_SERVER_URL}" <"$CONFIG_FILE" >"$WORK/config.yaml"
+SEARCH_ARGS=()
+if [[ $ENABLE_WEB_SEARCH == true ]]; then
+  SEARCH_ARGS=(
+    --set-string 'env[1].name=WEB_SEARCH_API_KEY'
+    --set-string "env[1].valueFrom.secretKeyRef.name=$WEB_SEARCH_API_KEY_SECRET"
+    --set-string "env[1].valueFrom.secretKeyRef.key=$WEB_SEARCH_API_KEY_SECRET_KEY"
+  )
+else
+  python3 - "$WORK/config.yaml" <<'PY'
+import sys
+
+import yaml
+
+def without_web_search(value):
+    if isinstance(value, list):
+        return [without_web_search(item) for item in value
+                if not (isinstance(item, dict) and item.get("filter") == "openai_web_search_dispatch")]
+    if isinstance(value, dict):
+        return {key: without_web_search(item) for key, item in value.items()}
+    return value
+
+with open(sys.argv[1]) as source:
+    config = without_web_search(yaml.safe_load(source))
+with open(sys.argv[1], "w") as target:
+    yaml.safe_dump(config, target, sort_keys=False)
+PY
+fi
 
 oc create namespace "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
+if [[ $ENABLE_WEB_SEARCH == true &&
+  -z $(oc -n "$NAMESPACE" get secret "$WEB_SEARCH_API_KEY_SECRET" --ignore-not-found \
+    -o jsonpath="{.data.${WEB_SEARCH_API_KEY_SECRET_KEY//./\\.}}") ]]; then
+  echo "Secret $WEB_SEARCH_API_KEY_SECRET with nonempty key $WEB_SEARCH_API_KEY_SECRET_KEY is required in $NAMESPACE" >&2
+  exit 1
+fi
 
 oc apply -f - <<YAML
 apiVersion: networking.k8s.io/v1
@@ -80,5 +120,6 @@ helm upgrade --install "$RELEASE" \
   --set-string "fullnameOverride=$RELEASE" \
   --set-string "env[0].valueFrom.secretKeyRef.name=$API_KEY_SECRET" \
   --set-string "env[0].valueFrom.secretKeyRef.key=$API_KEY_SECRET_KEY" \
+  "${SEARCH_ARGS[@]}" \
   --set-file "config.inline=$WORK/config.yaml" \
   --post-renderer "$ROOT/scripts/post-render.py" --wait --timeout 5m
