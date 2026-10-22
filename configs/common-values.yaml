@@ -1,7 +1,7 @@
 image:
-  repository: ghcr.io/praxis-proxy/ai
-  tag: "0.7.0"
-  digest: sha256:550661eea7e392a9f4415b836e0b2393299f26856bc02cbbc8d3301d49b759f3
+  repository: quay.io/higginsd/imagehost
+  tag: praxis-ai-subrequest-fix
+  digest: sha256:2b8a3cf35338a0a9f099552f2c01d84978bccb442d81f0d84c58f1fae6daac82
 
 health:
   readiness:

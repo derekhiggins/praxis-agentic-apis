@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shop outage demo - Praxis request flow</title>
+<link rel="stylesheet" href="https://noyitz.github.io/flowstory/templates/style.css">
+<style>.fs-inspector-line { white-space: pre-wrap; word-break: break-word; }</style>
+</head>
+<body>
+
+<button class="fs-theme-toggle" id="fs-theme">&#9790;</button>
+
+<div class="fs-brand" id="fs-brand"></div>
+<div class="fs-title" id="fs-title"></div>
+
+<div class="fs-panel">
+  <div class="fs-flow-bar">
+    <select id="fs-flow-select"></select>
+    <button class="fs-start" id="fs-play">&#9654; Start</button>
+    <button id="fs-speed">1x</button>
+    <button id="fs-loop" style="border-color:#79c0ff;color:#79c0ff">&#8635; Loop</button>
+    <button class="fs-reset" id="fs-reset">Reset</button>
+  </div>
+  <div class="fs-steps" id="fs-steps">
+    <div class="fs-steps-title">Flow Steps <span style="font-weight:400;font-size:11px;color:var(--fs-text-dim)">· click to jump</span></div>
+    <div id="fs-steps-container"></div>
+  </div>
+  <div class="fs-inspector" id="fs-inspector">
+    <div class="fs-inspector-title" id="fs-inspector-title" style="color:var(--fs-accent)">Request</div>
+    <div id="fs-inspector-content"></div>
+  </div>
+</div>
+
+<div id="fs-highlight-box" style="display:none;position:fixed;z-index:350;border-radius:10px;pointer-events:none"></div>
+<div id="fs-overlay" style="display:none;position:fixed;top:0;left:0;right:380px;bottom:0;z-index:300;background:rgba(0,0,0,0.6)">
+  <div id="fs-overlay-card" style="position:absolute;background:#161b22ee;border:1px solid #30363d;border-radius:14px;max-width:420px;padding:22px 26px;box-shadow:0 12px 40px rgba(0,0,0,0.5)">
+    <button id="fs-overlay-close" style="position:absolute;top:10px;right:14px;background:none;border:none;color:#8b949e;font-size:18px;cursor:pointer;padding:4px 8px;border-radius:6px">✕</button>
+    <div id="fs-overlay-accent" style="width:4px;height:24px;border-radius:2px;position:absolute;left:0;top:22px"></div>
+    <h2 id="fs-overlay-title" style="margin:0 0 6px;font-size:18px;color:#c9d1d9;font-family:system-ui"></h2>
+    <p id="fs-overlay-desc" style="margin:0 0 14px;font-size:13px;color:#8b949e;line-height:1.5;font-family:system-ui"></p>
+    <div id="fs-overlay-details" style="font-size:12px;font-family:'SF Mono',Menlo,monospace"></div>
+    <button id="fs-overlay-resume" style="margin-top:14px;padding:7px 20px;border:1px solid #3fb950;border-radius:8px;background:transparent;color:#3fb950;font-size:13px;cursor:pointer;font-family:system-ui">&#9654; Resume Flow</button>
+  </div>
+</div>
+
+<div class="fs-legend" id="fs-legend"></div>
+
+<canvas id="fs-canvas"></canvas>
+
+<script type="module">
+import { FlowStory } from 'https://noyitz.github.io/flowstory/src/index.js';
+
+const REQ = '#58a6ff', RES = '#3fb950', TOOL = '#d2a8ff', APPR = '#f0883e', ERR = '#f85149';
+const VS = 'vs_7cf7ea2f-a6a6-4416-88ba-dbf3582524ad';
+const OGX = 'ogx-distribution-service.redhat-ods-applications.svc.cluster.local:8321';
+const POD_A = 'checkout-api-569bd585db-hz6ss', POD_B = 'checkout-api-569bd585db-mc8mj';
+
+// ---------------------------------------------------------------- nodes
+const filter = (y, label, sublabel, color) =>
+  ({ x: 230, y, w: 440, h: 36, label, sublabel, color, type: 'plugin', fontSize: 12, inner: true });
+
+const nodes = {
+  sre:      { x: 30, y: 90, w: 100, h: 50, label: 'SRE', type: 'icon' },
+  client:   { x: 15, y: 170, w: 145, h: 50, label: 'sre-assistant', sublabel: 'OpenAI SDK', fontSize: 14 },
+  brave:    { x: 15, y: 535, w: 145, h: 50, label: 'Brave Search', sublabel: 'api.search.brave.com', fontSize: 14, color: RES },
+  openai:   { x: 320, y: 870, w: 260, h: 56, label: 'OpenAI', sublabel: 'api.openai.com:443 · gpt-6-luna', color: RES },
+
+  cluster:  { x: 180, y: 60, w: 1140, h: 780, label: 'OpenShift cluster', type: 'boundary' },
+  ns_praxis:{ x: 195, y: 90, w: 700, h: 720, label: 'namespace praxis-standalone', type: 'container', color: '#79c0ff' },
+  gateway:  { x: 210, y: 118, w: 480, h: 680, label: 'praxis-gateway pod · listener :8080', type: 'container', color: TOOL,
+    sections: [
+      { x: 220, y: 146, w: 460, h: 100, label: 'ingress', color: REQ },
+      { x: 220, y: 254, w: 460, h: 182, label: 'responses', color: TOOL },
+      { x: 220, y: 444, w: 460, h: 342, label: 'execution', color: RES },
+    ] },
+
+  f_ingress: filter(164, 'headers · state_owner', 'strip auth headers · owner praxis-standalone · x-tenant-id / x-user-id', REQ),
+  f_router:  filter(204, 'ai_operation · router', '/v1/responses → managed-chat · /v1/files, /v1/vector_stores → OGX', REQ),
+  f_req:     filter(272, 'openai_responses_request · openai_tool_parse', 'validate body · parse mcp, file_search, web_search', TOOL),
+  f_store:   filter(312, 'openai_conversations · openai_responses_store', 'persist responses and items to SQLite', TOOL),
+  f_rehyd:   filter(352, 'openai_responses_rehydrate', 'load history for previous_response_id', TOOL),
+  f_resolve: filter(392, 'openai_mcp_tool_resolve', 'connector mcp-server → openshift__* function tools', TOOL),
+  f_irr:     filter(462, 'iterative_request_router', 'step "inference" · max_iterations 8 · 360s', RES),
+  f_stream:  filter(502, 'openai_stream_events', 'merge rounds into one client SSE stream', RES),
+  f_web:     filter(542, 'openai_web_search_dispatch', 'Brave · max 32 calls/round', TOOL),
+  f_mcp:     filter(582, 'openai_mcp_dispatch', 'tools/call · approvals · 8 parallel', TOOL),
+  f_fs:      filter(622, 'openai_file_search_dispatch', 'OGX vector store search', TOOL),
+  f_loop:    filter(662, 'openai_agentic_loop', 'action loop / done · max_infer_iters 7', RES),
+  f_up:      filter(702, 'headers · load_balancer · credential_injection', 'Host + TLS SNI api.openai.com · Bearer OPENAI_API_KEY', REQ),
+  f_r2c:     filter(742, 'openai_responses_to_chat_completions · path_rewrite', 'Responses ⇄ Chat Completions', REQ),
+
+  sqlite:   { x: 710, y: 300, w: 160, h: 100, label: 'SQLite', sublabel: 'responses.db', color: '#79c0ff', fontSize: 15 },
+  mcp:      { x: 710, y: 568, w: 180, h: 56, label: 'openshift-mcp', sublabel: ':8080/mcp · SA mcp-viewer', color: TOOL, fontSize: 14 },
+
+  ns_ogx:   { x: 920, y: 90, w: 380, h: 120, label: 'namespace redhat-ods-applications', type: 'container', color: '#79c0ff' },
+  ogx:      { x: 940, y: 120, w: 340, h: 70, label: 'OGX', sublabel: 'Files · Vector Stores · :8321', color: '#79c0ff' },
+
+  k8s:      { x: 940, y: 568, w: 340, h: 56, label: 'Kubernetes API', sublabel: 'kubernetes.default.svc · RBAC', color: '#8b949e' },
+
+  ns_shop:  { x: 920, y: 650, w: 380, h: 160, label: 'namespace shop', type: 'container', color: RES },
+  checkout: { x: 935, y: 682, w: 200, h: 48, label: 'checkout-api', sublabel: 'Deployment · 2 pods', fontSize: 14, stackCount: 1, stackOffset: { dx: 5, dy: 4 } },
+  secret:   { x: 1145, y: 682, w: 140, h: 48, label: 'Secret', sublabel: 'orders-db-credentials', fontSize: 14, color: '#8b949e' },
+  storefront:{ x: 935, y: 747, w: 200, h: 48, label: 'storefront', sublabel: 'Deployment · 2 pods', fontSize: 14 },
+  ordersdb: { x: 1145, y: 747, w: 140, h: 48, label: 'orders-db', sublabel: 'StatefulSet · :5432', fontSize: 14 },
+};
+
+// ---------------------------------------------------------------- tooltips
+const tooltips = {
+  sre: { title: 'SRE', description: 'On-call engineer typing prompts into sre-assistant and answering approval prompts.' },
+  client: { title: 'sre-assistant', description: 'Python CLI using the OpenAI SDK Responses API. Each turn streams one response and chains to the previous one with previous_response_id. It prompts y/N for every mcp_approval_request.',
+    details: [['Endpoint', 'http://127.0.0.1:18080/v1'], ['Port-forward', 'oc port-forward 127.0.0.1:18080 → praxis-gateway :8080'], ['Model', 'gpt-6-luna'], ['Options', 'stream=True · store=True · reasoning none · 2048 tokens'], ['Tools', 'mcp (openshift), file_search, web_search'], ['Approval', 'pods_delete: always']] },
+  brave: { title: 'Brave Search', description: 'Web search backend for the hosted web_search tool. Results come back as web_search_call action.sources.',
+    details: [['Request', 'GET /res/v1/web/search?q=...'], ['Auth', 'X-Subscription-Token (WEB_SEARCH_API_KEY)']] },
+  openai: { title: 'OpenAI', description: 'Chat Completions backend. Every agentic round is one streamed POST /v1/chat/completions with MCP, file_search, and web_search presented as function tools.',
+    details: [['Endpoint', 'api.openai.com:443 (TLS SNI)'], ['Path', '/v1/chat/completions'], ['Model', 'gpt-6-luna'], ['Auth', 'Bearer OPENAI_API_KEY (injected by Praxis)']] },
+  sqlite: { title: 'SQLite responses store', description: 'Local database in the praxis-gateway pod. Stores responses, conversation items, and pending MCP approval records (requires store=true).',
+    details: [['URL', 'sqlite:///var/lib/praxis/responses.db'], ['Tables', 'openai_responses, openai_conversations, openai_conversation_items']] },
+  mcp: { title: 'OpenShift MCP server', description: 'Streamable-HTTP MCP server running as SA mcp-viewer. Its built-in denied_resources default blocks Secret, ServiceAccount, and RBAC objects before any API call.',
+    details: [['URL', 'http://openshift-mcp:8080/mcp'], ['Mode', 'read_only false · disable_destructive false'], ['Tools', '10 read tools + pods_delete'], ['Denied', 'Secret, ServiceAccount, rbac.authorization.k8s.io'], ['Ingress', 'praxis-gateway pods only']] },
+  ogx: { title: 'OGX', description: 'Hosts Files and Vector Stores. setup.sh uploads 11 runbooks and incident reports into one vector store; file_search queries it.',
+    details: [['Service', OGX], ['Vector store', VS], ['Search', 'POST /v1/vector_stores/{id}/search'], ['Scoping', 'x-tenant-id / x-user-id: praxis-standalone']] },
+  k8s: { title: 'Kubernetes API', description: 'Called by openshift-mcp with the mcp-viewer token. RBAC in shop: ClusterRole view plus Role pod-restarter.',
+    details: [['view', 'read workloads, logs, events (no Secrets)'], ['pod-restarter', 'pods: get, list, delete']] },
+  checkout: { title: 'checkout-api', description: 'Reads DB credentials from Secret env vars at container start. After setup.sh rotates the password it keeps the old one, fails DB auth, and goes NotReady. Fix: delete the pods so the Deployment recreates them.',
+    details: [['Replicas', '2'], ['Readiness', '/healthz/ready (DB auth)'], ['Env', 'DATABASE_USER / DATABASE_PASSWORD from orders-db-credentials']] },
+  secret: { title: 'orders-db-credentials', description: 'Rotated by setup.sh. The assistant tried to read it; openshift-mcp refused (denied_resources), and the view role has no Secret access either.' },
+  storefront: { title: 'storefront', description: 'Web frontend generating simulated shopper traffic. Proxies POST /checkout to checkout-api and returns 502 while checkout-api has no ready endpoints.',
+    details: [['Replicas', '2'], ['Logs', 'access lines + 60s stats summary']] },
+  ordersdb: { title: 'orders-db', description: 'Fake PostgreSQL that checks passwords against the mounted Secret on every connection, so it sees the rotated password immediately.',
+    details: [['Kind', 'StatefulSet, 1 replica'], ['Port', '5432']] },
+  f_ingress: { title: 'Ingress identity', description: 'Removes client auth and identity headers, then sets a fixed state owner. Every stored response and vector store call is scoped to this owner.',
+    details: [['request_remove', 'authorization, x-api-key, x-auth-*, x-user-ogx-key, ...'], ['state_owner', 'tenant/subject praxis-standalone'], ['Headers', 'x-tenant-id, x-user-id']] },
+  f_router: { title: 'Router', description: 'Classifies the operation and routes by path. Responses go to managed-chat; Files and Vector Stores are proxied to OGX directly.',
+    details: [['/v1/responses', 'managed-chat'], ['/v1/conversations', 'managed-chat'], ['/v1/files, /v1/vector_stores', 'ogx']] },
+  f_req: { title: 'openai_responses_request · openai_tool_parse', description: 'Validates the Responses body (on_invalid: reject) and parses the hosted tools.',
+    details: [['Tools', 'mcp, file_search, web_search']] },
+  f_store: { title: 'Conversations and responses store', description: 'Runs before the router so the response path persists the composed SSE. Stores each response id and its items, plus pending approval records.',
+    details: [['Backend', 'sqlite'], ['Database', '/var/lib/praxis/responses.db']] },
+  f_rehyd: { title: 'openai_responses_rehydrate', description: 'Loads the stored input and output items for previous_response_id and prepends them to the new input.' },
+  f_resolve: { title: 'openai_mcp_tool_resolve', description: 'Opens an MCP session (initialize, tools/list) on every request; listings are not cached. Converts allowed tools to function tools named openshift__<tool> and emits mcp_list_tools.',
+    details: [['Connector', 'mcp-server → http://openshift-mcp:8080/mcp'], ['max_tools', '256']] },
+  f_irr: { title: 'iterative_request_router', description: 'Runs the "inference" step repeatedly. After each round, openai_agentic_loop sets action=loop to run another round, otherwise the request is done.',
+    details: [['max_iterations', '8'], ['timeout_ms', '360000'], ['step_timeout_ms', '300000']] },
+  f_stream: { title: 'openai_stream_events', description: 'Merges the Responses events from every round into one SSE stream to the client.',
+    details: [['max_events', '200000'], ['timeout_secs', '600']] },
+  f_web: { title: 'openai_web_search_dispatch', description: 'Runs web_search calls against Brave and emits web_search_call items with action.sources.',
+    details: [['Provider', 'brave'], ['API key', 'env WEB_SEARCH_API_KEY'], ['max_calls_per_round', '32']] },
+  f_mcp: { title: 'openai_mcp_dispatch', description: 'Runs MCP tools/call over streamable HTTP with a per-request session pool and emits mcp_call items. Calls gated by require_approval become mcp_approval_request; approved records are loaded from the store at iteration 0 and used once.',
+    details: [['max_calls_per_round', '32'], ['max_parallel_calls', '8'], ['max_result_bytes', '1 MiB'], ['max_total_result_bytes', '8 MiB']] },
+  f_fs: { title: 'openai_file_search_dispatch', description: 'Runs file_search against the OGX vector store search API and emits file_search_call items with results.',
+    details: [['vector_store_url', 'http://' + OGX], ['timeout_ms', '10000'], ['on_failure', 'closed']] },
+  f_loop: { title: 'openai_agentic_loop', description: 'On the response path, collects tool calls from the model. If any are dispatchable the action is loop, otherwise done. On the request path, builds the next round input.',
+    details: [['max_infer_iters', '7'], ['max_retained_bytes', '256 MiB']] },
+  f_up: { title: 'Upstream selection and credentials', description: 'Removes x-tenant-id/x-user-id, sets Host, selects the managed-chat cluster with TLS SNI, and injects the OpenAI key.',
+    details: [['Endpoint', 'api.openai.com:443'], ['TLS SNI', 'api.openai.com'], ['Authorization', 'Bearer OPENAI_API_KEY']] },
+  f_r2c: { title: 'openai_responses_to_chat_completions · path_rewrite', description: 'Turns the Responses request into Chat Completions (file_search and web_search become private function tools) and the Chat SSE back into Responses events. path_rewrite maps /v1/responses to /v1/chat/completions.',
+    details: [['Rewrite', '/v1/responses → /v1/chat/completions'], ['stream_timeout_secs', '300']] },
+};
+
+// ---------------------------------------------------------------- edges
+const E = {
+  sre_cli:   { fromBottom: true, fromXOff: -12, toTop: true, toXOff: -20 },
+  cli_sre:   { fromTop: true, fromXOff: 20, toBottom: true, toXOff: 28 },
+  cli_in:    { fromRight: true, toLeft: true, glow: 'gateway' },
+  out_cli:   { fromLeft: true, toRight: true, yOff: 10, waypoints: [{ x: 172, y: 530 }, { x: 172, y: 205 }] },
+  store:     { fromRight: true, toLeft: true, yOff: -8 },
+  rehyd:     { fromRight: true, toLeft: true, yOff: -12 },
+  rehyd_back:{ fromLeft: true, toRight: true, yOff: 12 },
+  res_mcp:   { fromRight: true, toTop: true, toXOff: -20 },
+  mcp_res:   { fromTop: true, fromXOff: 20, toRight: true },
+  mcp_db:    { toBottom: true, toXOff: -35, waypoints: [{ x: 700, y: 588 }, { x: 700, y: 420 }, { x: 755, y: 420 }] },
+  disp_mcp:  { fromRight: true, toLeft: true, yOff: 2 },
+  mcp_disp:  { fromLeft: true, toRight: true, yOff: 12 },
+  fs_ogx:    { fromRight: true, toLeft: true, yOff: -5, waypoints: [{ x: 907, y: 635 }, { x: 907, y: 150 }] },
+  ogx_fs:    { fromLeft: true, toRight: true, yOff: 5, waypoints: [{ x: 913, y: 160 }, { x: 913, y: 645 }] },
+  web_brave: { fromLeft: true, toRight: true, yOff: -6 },
+  brave_web: { fromRight: true, toLeft: true, yOff: 6 },
+  mcp_k8s:   { fromRight: true, toLeft: true, yOff: -6 },
+  k8s_mcp:   { fromLeft: true, toRight: true, yOff: 6 },
+  k8s_pod:   { fromBottom: true, fromXOff: -75, toTop: true },
+  up:        { fromBottom: true, fromXOff: -20, toTop: true, toXOff: -20 },
+  down:      { fromTop: true, fromXOff: 30, toBottom: true, toXOff: 30 },
+};
+
+// ---------------------------------------------------------------- inspector helpers
+// Line prefixes: + add, - del, ! err, * highlight
+const STYLE = { '+': 'add', '-': 'del', '!': 'err', '*': 'highlight' };
+const lines = (arr) => arr.map(v => STYLE[v[0]] ? { v: v.slice(1), s: STYLE[v[0]] } : { v, s: 'keep' });
+const I = (label, phase, headers, body) => {
+  const m = { label, phase };
+  if (headers) m.replaceHeaders = lines(headers);
+  if (body) m.replaceBody = lines(body);
+  return m;
+};
+const A = (from, to, color, edge, text, insp) => ({ mode: 'arrow', from, to, color, ...edge, text, insp });
+const U = (target, text, insp, errColor) => ({ mode: 'lightup', target, text, insp, ...(errColor ? { errColor } : {}) });
+
+function build(steps) {
+  const muts = [];
+  const out = steps.map((s, i) => {
+    const { insp, ...step } = s;
+    if (step.mode === 'arrow') step.num = i + 1; else step.badge = i + 1;
+    if (insp) muts.push({ step: i + 1, ...insp });
+    return step;
+  });
+  return { steps: out, muts };
+}
+
+// ---------------------------------------------------------------- payloads
+const TOOLS = [
+  '  "tools": [',
+  '    {"type": "mcp", "server_label": "openshift", "connector_id": "mcp-server",',
+  '     "allowed_tools": ["pods_list_in_namespace", "pods_get", "pods_log", "pods_top",',
+  '                       "events_list", "resources_list", "resources_get", "pods_delete"],',
+  '     "require_approval": {"always": {"tool_names": ["pods_delete"]},',
+  '                          "never": {"tool_names": [...7 read tools]}}},',
+  '    {"type": "file_search", "vector_store_ids": ["' + VS + '"], "max_num_results": 4},',
+  '    {"type": "web_search"}',
+  '  ]',
+];
+const CLIENT_H = ['POST /v1/responses', 'Host: 127.0.0.1:18080', 'Authorization: Bearer unused', 'Content-Type: application/json'];
+const INGRESS_H = ['POST /v1/responses', 'Host: 127.0.0.1:18080', '-Authorization: Bearer unused', 'Content-Type: application/json',
+  '+x-tenant-id: praxis-standalone', '+x-user-id: praxis-standalone'];
+const clientBody = (input, prev) => [
+  '{',
+  '  "model": "gpt-6-luna",',
+  '  "instructions": "You are the on-call SRE assistant for the online shop. ...",',
+  '*  "previous_response_id": ' + prev + ',',
+  ...input.map(l => '*  ' + l),
+  '  "store": true,',
+  '  "stream": true,',
+  '  "reasoning": {"effort": "none"},',
+  '  "max_output_tokens": 2048,',
+  '  "include": ["file_search_call.results", "web_search_call.action.sources"],',
+  ...TOOLS,
+  '}',
+];
+const MCP_H = ['POST /mcp', 'Host: openshift-mcp:8080', 'Content-Type: application/json', 'Accept: application/json, text/event-stream', 'Mcp-Session-Id: <session>'];
+const MCP_LIST = [
+  '{"jsonrpc": "2.0", "id": 1, "method": "initialize",',
+  ' "params": {"protocolVersion": "...", "clientInfo": {...}}}',
+  '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}',
+];
+const MCP_LIST_RES = [
+  '{"jsonrpc": "2.0", "id": 2, "result": {"tools": [',
+  '  {"name": "events_list"}, {"name": "namespaces_list"}, {"name": "pods_get"},',
+  '  {"name": "pods_list"}, {"name": "pods_list_in_namespace"}, {"name": "pods_log"},',
+  '  {"name": "pods_top"}, {"name": "projects_list"}, {"name": "resources_get"},',
+  '  {"name": "resources_list"}, {"name": "pods_delete"}',
+  ']}}',
+];
+const RESOLVED = [
+  '+{"type": "mcp_list_tools", "server_label": "openshift",',
+  '+ "tools": [8 tools after allowed_tools filter]}',
+  'function tools for the model:',
+  '+  openshift__pods_list_in_namespace, openshift__pods_get,',
+  '+  openshift__pods_log, openshift__pods_top, openshift__events_list,',
+  '+  openshift__resources_list, openshift__resources_get,',
+  '+  openshift__pods_delete   (require_approval: always)',
+];
+const CHAT_H = ['POST /v1/chat/completions', 'Host: api.openai.com', 'Authorization: Bearer $OPENAI_API_KEY', 'Content-Type: application/json'];
+const UP_H = ['POST /v1/responses', '-x-tenant-id: praxis-standalone', '-x-user-id: praxis-standalone', '+Host: api.openai.com',
+  '+Content-Type: application/json', '+Authorization: Bearer $OPENAI_API_KEY', '+upstream: managed-chat → api.openai.com:443 (TLS SNI)'];
+const CHAT_TOOLS = [
+  '  "tools": [',
+  '    {"type": "function", "function": {"name": "openshift__pods_list_in_namespace", ...}},',
+  '    ... 6 more openshift__* read tools,',
+  '    {"type": "function", "function": {"name": "openshift__pods_delete", ...}},',
+  '    {"type": "function", "function": {"name": "file_search", ...}},',
+  '    {"type": "function", "function": {"name": "web_search", ...}}',
+  '  ]',
+];
+const chatBody = (msgs) => [
+  '{',
+  '  "model": "gpt-6-luna",',
+  '  "stream": true,',
+  '  "messages": [',
+  '    {"role": "system", "content": "You are the on-call SRE assistant ..."},',
+  ...msgs.map(m => '    ' + m),
+  '  ],',
+  ...CHAT_TOOLS,
+  '}',
+];
+const SSE_H = ['HTTP/1.1 200 OK', 'Content-Type: text/event-stream'];
+const toolCallsSSE = (calls) => [
+  ...calls.map((c, i) => 'data: {"choices": [{"delta": {"tool_calls": [{"index": ' + i + ', "function": {"name": "' + c[0] + '", "arguments": "' + c[1] + '"}}]}}]}'),
+  'data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}',
+  'data: [DONE]',
+];
+const toolsCall = (name, args) =>
+  '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "' + name + '", "arguments": ' + args + '}}';
+const ogxReq = (query) => [
+  ['POST /v1/vector_stores/' + VS + '/search', 'Host: ' + OGX, 'Content-Type: application/json',
+    '+x-tenant-id: praxis-standalone', '+x-user-id: praxis-standalone'],
+  ['{', '  "query": "' + query + '",', '  "max_num_results": 4', '}'],
+];
+const ogxRes = (files, query) => [
+  '{"object": "vector_store.search_results.page", "data": [',
+  ...files.map(f => '  {"file_id": "' + f[1] + '", "filename": "' + f[0] + '", "score": ..., "content": [...]},'),
+  ']}',
+  'emitted to client:',
+  '+{"type": "file_search_call", "status": "completed",',
+  '+ "queries": ["' + query + '"],',
+  '+ "results": [' + files.map(f => '"' + f[0] + '"').join(', ') + ']}',
+];
+const FILES = {
+  storefront: ['storefront-runbook.md', 'file-1b43fed2230b4c3185a2dfebafe3b0db'],
+  checkout: ['checkout-api-runbook.md', 'file-66ff604e14d04b658138c511376fe0a2'],
+  known: ['known-issues.md', 'file-767fa128b44e45caa6a2757c02a1614b'],
+  oncall: ['oncall-escalation.md', 'file-b97f6d3385e94abea80f46673eef7441'],
+  inc4867: ['INC-4867.md', 'file-f01c25c9b5e84213a6ebd30548627062'],
+  inc4821: ['INC-4821.md', 'file-58b7d0ef56f245af80a1c177d1eb477a'],
+  inc4933: ['INC-4933.md', 'file-645f9509410042e5936a12bc47f13bcc'],
+};
+const storeLines = (id, extra = []) => [
+  ['sqlite:///var/lib/praxis/responses.db'],
+  ['+openai_responses: ' + id + ' (store=true)', '+  input items + output items + composed SSE', ...extra],
+];
+const completedSSE = (id, text) => [
+  'event: response.output_text.delta',
+  'data: {"delta": "' + text + '"}',
+  '...',
+  'event: response.completed',
+  '+data: {"response": {"id": "' + id + '", "status": "completed"}}',
+];
+const approvalReq = (id, pod) => [
+  '+{"type": "mcp_approval_request", "id": "' + id + '",',
+  '+ "server_label": "openshift", "name": "pods_delete",',
+  '+ "arguments": "{\\"name\\":\\"' + pod + '\\",\\"namespace\\":\\"shop\\"}"}',
+];
+
+// ---------------------------------------------------------------- common request phase
+const requestPhase = (turn, input, prev, rehydrate) => [
+  A('client', 'f_ingress', REQ, E.cli_in, `${turn}: POST /v1/responses (stream, store${prev !== 'null' ? ', previous_response_id' : ''})`,
+    I('sre-assistant → Praxis', 'request', CLIENT_H, clientBody(input, prev))),
+  U('f_ingress', 'Ingress: strip Authorization, set owner praxis-standalone',
+    I('ingress: headers · state_owner', 'request', INGRESS_H)),
+  U('f_router', 'Router: /v1/responses → managed-chat (Responses chains run)',
+    I('ingress: router', 'request', [...INGRESS_H.map(h => h.replace(/^[+-]/, '')).filter(h => !h.startsWith('Authorization')), '+route: /v1/responses → cluster managed-chat'])),
+  U('f_req', 'Parse the Responses body and tools: mcp, file_search, web_search',
+    I('openai_responses_request · openai_tool_parse', 'request', null,
+      ['parsed tools:', '+  mcp        server_label=openshift connector_id=mcp-server', '+  file_search vector_store_ids=[' + VS + ']', '+  web_search', 'store=true · stream=true · previous_response_id=' + prev])),
+  ...(rehydrate ? [
+    A('f_rehyd', 'sqlite', REQ, E.rehyd, `Rehydrate: load history for ${prev}`,
+      I('openai_responses_rehydrate', 'request', ['sqlite:///var/lib/praxis/responses.db'],
+        ['SELECT input + output items', '*  WHERE id = ' + prev + ' AND owner = praxis-standalone'])),
+    A('sqlite', 'f_rehyd', RES, E.rehyd_back, 'Prior turns prepended to the new input',
+      I('openai_responses_rehydrate', 'response', null, [...rehydrate, '+{"role": "user", "content": "' + input[0].replace(/^"input": "|",$/g, '') + '"}'])),
+  ] : []),
+  A('f_resolve', 'mcp', TOOL, E.res_mcp, 'MCP initialize + tools/list (every request, not cached)',
+    I('openai_mcp_tool_resolve → openshift-mcp', 'request', MCP_H, MCP_LIST)),
+  A('mcp', 'f_resolve', RES, E.mcp_res, 'Tool list → openshift__* function tools, mcp_list_tools emitted',
+    I('openai_mcp_tool_resolve', 'response', ['HTTP/1.1 200 OK', 'Content-Type: application/json'], [...MCP_LIST_RES, ...RESOLVED])),
+];
+
+const toInference = (round, msgs) => [
+  U('f_up', `Round ${round}: set Host, pick managed-chat (TLS SNI), inject OPENAI_API_KEY`,
+    I('headers · load_balancer · credential_injection', 'request', UP_H)),
+  U('f_r2c', `Round ${round}: Responses → Chat Completions, path_rewrite`,
+    I('openai_responses_to_chat_completions · path_rewrite', 'request', CHAT_H, chatBody(msgs))),
+  A('f_r2c', 'openai', REQ, E.up, `Round ${round}: POST /v1/chat/completions (stream)`,
+    I('Praxis → OpenAI', 'request', CHAT_H, chatBody(msgs))),
+];
+
+const chatRound = (round, msgs, calls, text) => [
+  A('f_r2c', 'openai', REQ, E.up, `Round ${round}: POST /v1/chat/completions with tool outputs`,
+    I('Praxis → OpenAI', 'request', CHAT_H, chatBody(msgs))),
+  A('openai', 'f_r2c', RES, E.down, text,
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, toolCallsSSE(calls))),
+];
+
+// ---------------------------------------------------------------- turn 1
+const T1_IN = ['"input": "Is my shop website running ok?",'];
+const T1_USER = '{"role": "user", "content": "Is my shop website running ok?"},';
+const turn1 = build([
+  A('sre', 'client', REQ, E.sre_cli, 'SRE: "Is my shop website running ok?"',
+    I('SRE prompt', 'request', ['sre-assistant (stdin)'], ['> Is my shop website running ok?'])),
+  ...requestPhase('Turn 1', T1_IN, 'null', null),
+  U('f_irr', 'iterative_request_router: inference step, iteration 0',
+    I('iterative_request_router', 'request', null, ['step: inference', 'iteration: 0 / max_iterations 8', 'timeout_ms: 360000'])),
+  ...toInference(1, [T1_USER]),
+  A('openai', 'f_r2c', RES, E.down, 'Model calls 4 tools: pods_list_in_namespace, resources_list ×3',
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, toolCallsSSE([
+      ['openshift__pods_list_in_namespace', '{\\"namespace\\": \\"shop\\"}'],
+      ['openshift__resources_list', '{\\"kind\\": \\"Deployment\\", ...}'],
+      ['openshift__resources_list', '{\\"kind\\": \\"Service\\", ...}'],
+      ['openshift__resources_list', '{\\"kind\\": \\"Route\\", ...}']]))),
+  U('f_loop', 'Agentic loop: 4 dispatchable MCP calls → action = loop',
+    I('openai_agentic_loop', 'response', null, ['collected tool calls:', '  openshift__pods_list_in_namespace', '  openshift__resources_list ×3', '*action: loop'])),
+  A('f_stream', 'client', RES, E.out_cli, 'Stream to client: mcp_list_tools, then items as each round finishes',
+    I('openai_stream_events → sre-assistant', 'response', SSE_H, [
+      'event: response.created', 'data: {"response": {"id": "resp_turn1", ...}}',
+      'event: response.output_item.done', '+data: {"item": {"type": "mcp_list_tools", "server_label": "openshift", ...}}'])),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'Round 2 request phase: MCP tools/call ×4',
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [
+      toolsCall('pods_list_in_namespace', '{"namespace": "shop"}'),
+      toolsCall('resources_list', '{"apiVersion": "apps/v1", "kind": "Deployment", "namespace": "shop"}'),
+      '... Service, route.openshift.io/v1 Route'])),
+  A('mcp', 'k8s', TOOL, E.mcp_k8s, 'List pods, Deployments, Services, Routes in shop (SA mcp-viewer)',
+    I('openshift-mcp → Kubernetes API', 'request', ['Authorization: Bearer <mcp-viewer token>'], [
+      'GET /api/v1/namespaces/shop/pods', 'GET /apis/apps/v1/namespaces/shop/deployments',
+      'GET /api/v1/namespaces/shop/services', 'GET /apis/route.openshift.io/v1/namespaces/shop/routes'])),
+  A('k8s', 'mcp', RES, E.k8s_mcp, 'Pods: checkout-api 0/1 NotReady ×2',
+    I('Kubernetes API → openshift-mcp', 'response', ['HTTP/1.1 200 OK'], [
+      'NAME                            READY   STATUS',
+      '!' + POD_A + '   0/1     Running',
+      '!' + POD_B + '   0/1     Running',
+      'orders-db-0                     1/1     Running',
+      'storefront-79c9766c9c-tgtln     1/1     Running',
+      'storefront-79c9766c9c-xf8rj     1/1     Running'])),
+  A('mcp', 'f_mcp', RES, E.mcp_disp, 'mcp_call items emitted with results',
+    I('openshift-mcp → openai_mcp_dispatch', 'response', ['HTTP/1.1 200 OK', 'Content-Type: application/json'], [
+      '{"jsonrpc": "2.0", "id": 3, "result": {"content": [{"type": "text", "text": "NAME READY ..."}]}}',
+      'emitted to client:',
+      '+{"type": "mcp_call", "server_label": "openshift", "name": "pods_list_in_namespace",',
+      '+ "arguments": "{\\"namespace\\": \\"shop\\"}", "output": "NAME READY ..."}',
+      '+... 3 more mcp_call items'])),
+  ...chatRound(2, [T1_USER, '{"role": "assistant", "tool_calls": [4 × openshift__*]},', '{"role": "tool", "tool_call_id": "call_1", "content": "NAME READY ..."},', '... 3 more tool results'],
+    [['file_search', '{\\"query\\": \\"shop storefront checkout-api ...\\"}']], 'Model calls file_search (runbooks)'),
+  A('f_fs', 'ogx', TOOL, E.fs_ogx, 'file_search → OGX vector store search',
+    I('openai_file_search_dispatch → OGX', 'request', ...ogxReq('shop storefront checkout-api orders-db troubleshooting runbook incident website availability'))),
+  A('ogx', 'f_fs', RES, E.ogx_fs, 'Results: storefront-runbook, checkout-api-runbook, known-issues',
+    I('OGX → openai_file_search_dispatch', 'response', ['HTTP/1.1 200 OK', 'Content-Type: application/json'],
+      ogxRes([FILES.storefront, FILES.storefront, FILES.checkout, FILES.known], 'shop storefront checkout-api orders-db ...'))),
+  ...chatRound(3, ['...history...', '{"role": "tool", "tool_call_id": "call_5", "content": "<file_search results>"},'],
+    [['openshift__pods_log', '{\\"name\\": \\"storefront-79c9766c9c-tgtln\\", \\"tail\\": 80, ...}'], ['openshift__pods_log', '... ×4 (storefront, checkout-api, orders-db)'],
+      ['openshift__events_list', '{\\"namespace\\": \\"shop\\"}'], ['openshift__resources_get', '{\\"kind\\": \\"Endpoints\\", ...} ×2']],
+    'Model calls pods_log ×5, events_list, resources_get Endpoints ×2'),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'MCP tools/call ×8: logs, events, Endpoints',
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [
+      toolsCall('pods_log', '{"name": "' + POD_A + '", "namespace": "shop", "tail": 100}'),
+      '... pods_log ×4, events_list, resources_get Endpoints ×2'])),
+  A('mcp', 'k8s', TOOL, E.mcp_k8s, 'Read pod logs, events, Endpoints',
+    I('openshift-mcp → Kubernetes API', 'request', ['Authorization: Bearer <mcp-viewer token>'], [
+      'GET /api/v1/namespaces/shop/pods/' + POD_A + '/log?tailLines=100', '...',
+      'GET /api/v1/namespaces/shop/events', 'GET /api/v1/namespaces/shop/endpoints/checkout-api'])),
+  A('k8s', 'mcp', RES, E.k8s_mcp, 'Logs: password authentication failed; storefront checkout 502',
+    I('Kubernetes API → openshift-mcp', 'response', ['HTTP/1.1 200 OK'], [
+      'orders-db-0: credentials rotated for user "checkout"',
+      '!checkout-api: password authentication failed for user "checkout"',
+      '!checkout-api: readiness probe failed',
+      '!storefront: POST /checkout 502 (11 of 12 failed in 60s)',
+      'endpoints/checkout-api: no ready addresses'])),
+  U('checkout', 'checkout-api: stale DB password → NotReady, no endpoints',
+    I('Diagnosis so far', 'response', null, ['!checkout-api ×2 NotReady (old password from env)', '!storefront checkout → 502', 'orders-db Running']), ERR),
+  U('storefront', 'storefront: pages 200, checkout 502',
+    I('Diagnosis so far', 'response', null, ['!checkout-api ×2 NotReady (old password from env)', '!storefront checkout → 502', 'orders-db Running']), APPR),
+  A('mcp', 'f_mcp', RES, E.mcp_disp, 'mcp_call ×8 emitted',
+    I('openshift-mcp → openai_mcp_dispatch', 'response', ['HTTP/1.1 200 OK'], ['+mcp_call pods_log ×5', '+mcp_call events_list', '+mcp_call resources_get ×2'])),
+  A('f_fs', 'ogx', TOOL, E.fs_ogx, 'Round 4: file_search "checkout-api password secret rotation restart"',
+    I('openai_file_search_dispatch → OGX', 'request', ...ogxReq('checkout-api runbook password authentication failed secret rotation restart pod verify secret rotated'))),
+  A('ogx', 'f_fs', RES, E.ogx_fs, 'Results: checkout-api-runbook, INC-4867 (matching past incident)',
+    I('OGX → openai_file_search_dispatch', 'response', ['HTTP/1.1 200 OK'],
+      ogxRes([FILES.checkout, FILES.checkout, FILES.inc4867, FILES.inc4867], 'checkout-api runbook password authentication failed ...'))),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'Round 5: model asks resources_get Secret orders-db-credentials',
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [
+      '*' + toolsCall('resources_get', '{"apiVersion": "v1", "kind": "Secret", "name": "orders-db-credentials", "namespace": "shop"}')])),
+  U('mcp', 'Denied in openshift-mcp: Secret is in denied_resources (never reaches the API)',
+    I('openshift-mcp access control', 'error', ['denied_resources (downstream default):'], [
+      '  /v1 ServiceAccount', '!  /v1 Secret', '  rbac.authorization.k8s.io/v1 *',
+      'RBAC would also deny: view role has no Secret access']), ERR),
+  A('mcp', 'f_mcp', ERR, E.mcp_disp, 'mcp_call error: resource not allowed: /v1, Kind=Secret',
+    I('openshift-mcp → openai_mcp_dispatch', 'error', ['HTTP/1.1 200 OK'], [
+      '{"jsonrpc": "2.0", "id": 3, "result": {"isError": true, "content": [{"type": "text",',
+      '!  "text": "failed to get resource: Get \\"https://kubernetes.default.svc/api/v1/namespaces/shop/secrets/orders-db-credentials\\": resource not allowed: /v1, Kind=Secret"}]}}',
+      'emitted to client:',
+      '!{"type": "mcp_call", "name": "resources_get",',
+      '! "error": {"type": "mcp_tool_execution_error", "content": "failed to get resource: ..."}}'])),
+  A('f_web', 'brave', TOOL, E.web_brave, 'Round 6: web_search → Brave',
+    I('openai_web_search_dispatch → Brave', 'request',
+      ['GET /res/v1/web/search?q=<model query>&count=...', 'Host: api.search.brave.com', 'Accept: application/json', '+X-Subscription-Token: $WEB_SEARCH_API_KEY'], ['(no body)'])),
+  A('brave', 'f_web', RES, E.brave_web, '10 sources (Kubernetes docs, Stack Overflow, ...) → web_search_call',
+    I('Brave → openai_web_search_dispatch', 'response', ['HTTP/1.1 200 OK', 'Content-Type: application/json'], [
+      '{"web": {"results": [',
+      '  {"url": "https://stackoverflow.com/questions/37945800/update-kubernetes-secrets-doesnt-update-running-container-env-vars"},',
+      '  {"url": "https://kubernetes.io/docs/tasks/inject-data-application/distribute-credentials-secure/"},',
+      '  ... 8 more', ']}}',
+      'emitted to client:',
+      '+{"type": "web_search_call", "status": "completed",',
+      '+ "action": {"type": "search", "sources": [{"type": "url", "url": "https://stackoverflow.com/..."}, ...]}}'])),
+  A('f_r2c', 'openai', REQ, E.up, 'Round 7: POST /v1/chat/completions with all tool outputs',
+    I('Praxis → OpenAI', 'request', CHAT_H, chatBody(['...history + 15 tool results...']))),
+  A('openai', 'f_r2c', RES, E.down, 'Model answers with text, no tool calls',
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, [
+      'data: {"choices": [{"delta": {"content": "**No—browsing is working, but checkout is currently failing.**"}}]}',
+      '...', 'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}', 'data: [DONE]'])),
+  U('f_loop', 'Agentic loop: no tool calls → action = done',
+    I('openai_agentic_loop', 'response', null, ['collected tool calls: none', '*action: done'])),
+  A('f_store', 'sqlite', RES, E.store, 'Persist resp_turn1 (store=true)',
+    I('openai_responses_store', 'response', ...storeLines('resp_turn1'))),
+  A('f_stream', 'client', RES, E.out_cli, 'SSE: output_text deltas, response.completed resp_turn1',
+    I('openai_stream_events → sre-assistant', 'response', SSE_H, completedSSE('resp_turn1', '**No—browsing is working, but checkout is currently failing.** ...'))),
+  A('client', 'sre', RES, E.cli_sre, 'Answer: checkout fails after DB password rotation; proposes restarting checkout-api',
+    I('sre-assistant output', 'response', ['stdout'], [
+      '**No—browsing is working, but checkout is currently failing.**',
+      'Root cause: orders-db password rotated; checkout-api kept the old one.',
+      'Cites checkout-api-runbook.md and INC-4867.',
+      '*Recommended: restart the two checkout-api pods (needs approval).'])),
+]);
+
+// ---------------------------------------------------------------- turn 2
+const T1_HISTORY = ['{"role": "user", "content": "Is my shop website running ok?"}', '{"type": "mcp_list_tools", ...}', '{"type": "mcp_call", ...} ×13', '{"type": "file_search_call", ...} ×2', '{"type": "web_search_call", ...}', '{"type": "message", "role": "assistant", ...}'];
+const approvalBody = (id, prev) => [
+  '{',
+  '  "model": "gpt-6-luna",',
+  '*  "previous_response_id": "' + prev + '",',
+  '*  "input": [{"type": "mcp_approval_response",',
+  '*             "approval_request_id": "' + id + '", "approve": true}],',
+  '  "store": true, "stream": true, ...same tools',
+  '}',
+];
+const turn2 = build([
+  U('checkout', 'checkout-api still NotReady',
+    I('Cluster state', 'request', null, ['!checkout-api ×2 NotReady (old password)']), ERR),
+  A('sre', 'client', REQ, E.sre_cli, 'SRE: "restart the pods"',
+    I('SRE prompt', 'request', ['sre-assistant (stdin)'], ['> restart the pods'])),
+  ...requestPhase('Turn 2', ['"input": "restart the pods",'], '"resp_turn1"', T1_HISTORY),
+  ...toInference(1, ['...turn 1 history...', '{"role": "user", "content": "restart the pods"},']),
+  A('openai', 'f_r2c', RES, E.down, 'Model calls openshift__pods_delete (' + POD_A.slice(-5) + ')',
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, toolCallsSSE([
+      ['openshift__pods_delete', '{\\"name\\": \\"' + POD_A + '\\", \\"namespace\\": \\"shop\\"}']]))),
+  U('f_mcp', 'require_approval always: pods_delete → mcp_approval_request (not run)',
+    I('openai_mcp_dispatch: approval gate', 'response', null, ['require_approval.always: ["pods_delete"]', ...approvalReq('mcpr_1', POD_A)])),
+  U('f_loop', 'Nothing dispatchable → action = done',
+    I('openai_agentic_loop', 'response', null, ['pending: mcp_approval_request mcpr_1', '*action: done'])),
+  A('f_store', 'sqlite', RES, E.store, 'Persist resp_turn2a with the pending approval record',
+    I('openai_responses_store', 'response', ...storeLines('resp_turn2a', ['+pending approval mcpr_1: pods_delete ' + POD_A]))),
+  A('f_stream', 'client', APPR, E.out_cli, 'SSE: mcp_approval_request, response.completed resp_turn2a',
+    I('openai_stream_events → sre-assistant', 'response', SSE_H, [
+      'event: response.output_item.done', ...approvalReq('mcpr_1', POD_A).map(l => l.replace(/^\+/, '+data: ')),
+      'event: response.completed', '+data: {"response": {"id": "resp_turn2a", ...}}'])),
+  A('client', 'sre', APPR, E.cli_sre, 'Prompt: Approve pods_delete(' + POD_A + ')? [y/N]',
+    I('sre-assistant prompt', 'response', ['stdout'], ['[approval required] openshift.pods_delete({"name":"' + POD_A + '","namespace":"shop"})', '*Approve pods_delete(...)? [y/N]'])),
+  A('sre', 'client', APPR, E.sre_cli, 'SRE approves: y',
+    I('SRE answer', 'request', ['sre-assistant (stdin)'], ['+y'])),
+  A('client', 'f_ingress', APPR, E.cli_in, 'POST /v1/responses: mcp_approval_response, previous_response_id resp_turn2a',
+    I('sre-assistant → Praxis', 'request', CLIENT_H, approvalBody('mcpr_1', 'resp_turn2a'))),
+  A('f_mcp', 'sqlite', REQ, E.mcp_db, 'Iteration 0 (after ingress, rehydrate, tool resolve): load pending approval for resp_turn2a',
+    I('openai_mcp_dispatch: approval lookup', 'request', ['sqlite:///var/lib/praxis/responses.db'], [
+      'lookup approval_request_id = mcpr_1', '*  scoped to previous_response_id = resp_turn2a', '+approved · marked used (single use)'])),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'MCP tools/call pods_delete ' + POD_A,
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [toolsCall('pods_delete', '{"name": "' + POD_A + '", "namespace": "shop"}')])),
+  A('mcp', 'k8s', TOOL, E.mcp_k8s, 'DELETE pod (Role pod-restarter allows delete)',
+    I('openshift-mcp → Kubernetes API', 'request', ['Authorization: Bearer <mcp-viewer token>'], ['*DELETE /api/v1/namespaces/shop/pods/' + POD_A])),
+  A('k8s', 'checkout', TOOL, E.k8s_pod, 'Pod deleted; Deployment recreates it with the current Secret',
+    I('Kubernetes API', 'response', ['HTTP/1.1 200 OK'], ['-' + POD_A, '+checkout-api-569bd585db-mwttk (new, reads rotated password)'])),
+  A('mcp', 'f_mcp', RES, E.mcp_disp, 'mcp_call pods_delete emitted; inference continues',
+    I('openshift-mcp → openai_mcp_dispatch', 'response', ['HTTP/1.1 200 OK'], ['+{"type": "mcp_call", "name": "pods_delete", "arguments": "{\\"name\\":\\"' + POD_A + '\\", ...}", "output": "..."}'])),
+  ...chatRound(2, ['...history...', '{"role": "tool", "tool_call_id": "call_1", "content": "<pod deleted>"},'],
+    [['openshift__pods_list_in_namespace', '{\\"labelSelector\\": \\"app=checkout-api\\", ...}'], ['openshift__pods_delete', '{\\"name\\": \\"' + POD_B + '\\", ...}']],
+    'Model checks pods, then calls pods_delete (' + POD_B.slice(-5) + ')'),
+  A('f_stream', 'client', APPR, E.out_cli, 'Second approval: mcp_approval_request mcpr_2 (resp_turn2b)',
+    I('openai_stream_events → sre-assistant', 'response', SSE_H, [
+      '+data: {"item": {"type": "mcp_call", "name": "pods_list_in_namespace", ...}}',
+      ...approvalReq('mcpr_2', POD_B).map(l => l.replace(/^\+/, '+data: ')),
+      '+data: {"response": {"id": "resp_turn2b", ...}}'])),
+  A('sre', 'client', APPR, E.sre_cli, 'SRE approves ' + POD_B + ': y',
+    I('SRE answer', 'request', ['sre-assistant (stdin)'], ['Approve pods_delete({"name":"' + POD_B + '",...})? [y/N]', '+y'])),
+  A('client', 'f_ingress', APPR, E.cli_in, 'mcp_approval_response mcpr_2, previous_response_id resp_turn2b',
+    I('sre-assistant → Praxis', 'request', CLIENT_H, approvalBody('mcpr_2', 'resp_turn2b'))),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'Approval record used; MCP tools/call pods_delete ' + POD_B,
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [toolsCall('pods_delete', '{"name": "' + POD_B + '", "namespace": "shop"}')])),
+  A('mcp', 'k8s', TOOL, E.mcp_k8s, 'DELETE second pod',
+    I('openshift-mcp → Kubernetes API', 'request', ['Authorization: Bearer <mcp-viewer token>'], ['*DELETE /api/v1/namespaces/shop/pods/' + POD_B])),
+  A('k8s', 'checkout', TOOL, E.k8s_pod, 'Second pod recreated',
+    I('Kubernetes API', 'response', ['HTTP/1.1 200 OK'], ['-' + POD_B, '+checkout-api-569bd585db-rldlq (new)'])),
+  ...chatRound(3, ['...history...', '{"role": "tool", "tool_call_id": "call_3", "content": "<pod deleted>"},'],
+    [['openshift__pods_list_in_namespace', '...'], ['openshift__resources_get', '{\\"kind\\": \\"Deployment\\" | \\"Endpoints\\", ...}'], ['openshift__pods_log', '... new pods + storefront'], ['openshift__pods_get', '... mwttk, rldlq'], ['openshift__events_list', '{\\"fieldSelector\\": \\"type=Warning\\", ...}']],
+    'Verify: pods, Deployment, Endpoints, logs, pods_get, events (rounds grouped)'),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'MCP tools/call ×15 (verification)',
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [
+      toolsCall('resources_get', '{"apiVersion": "v1", "kind": "Endpoints", "name": "checkout-api", "namespace": "shop"}'),
+      toolsCall('pods_log', '{"name": "checkout-api-569bd585db-mwttk", "namespace": "shop", "tail": 30}'), '... 13 more'])),
+  A('mcp', 'k8s', TOOL, E.mcp_k8s, 'Read new pod state, Endpoints, logs',
+    I('openshift-mcp → Kubernetes API', 'request', ['Authorization: Bearer <mcp-viewer token>'], ['GET .../pods?labelSelector=app=checkout-api', 'GET .../endpoints/checkout-api', 'GET .../pods/checkout-api-569bd585db-mwttk/log', '...'])),
+  A('k8s', 'mcp', RES, E.k8s_mcp, 'checkout-api 2/2 Ready, 2 endpoints, orders return 201',
+    I('Kubernetes API → openshift-mcp', 'response', ['HTTP/1.1 200 OK'], [
+      '+checkout-api-569bd585db-mwttk   1/1   Running', '+checkout-api-569bd585db-rldlq   1/1   Running',
+      '+endpoints/checkout-api: 2 ready addresses', '+checkout-api: POST /orders 201', '+storefront: POST /checkout 303'])),
+  U('checkout', 'checkout-api Ready again',
+    I('Cluster state', 'response', null, ['+checkout-api 2/2 Ready', '+storefront checkout succeeds']), RES),
+  U('storefront', 'storefront checkout succeeds (upstream 201, storefront 303)',
+    I('Cluster state', 'response', null, ['+checkout-api 2/2 Ready', '+storefront checkout succeeds']), RES),
+  A('mcp', 'f_mcp', RES, E.mcp_disp, 'mcp_call ×15 emitted',
+    I('openshift-mcp → openai_mcp_dispatch', 'response', ['HTTP/1.1 200 OK'], ['+mcp_call ×15 (pods_list_in_namespace, resources_get, pods_log, pods_get, events_list)'])),
+  A('openai', 'f_r2c', RES, E.down, 'Final round: model answers with text',
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, ['data: {"choices": [{"delta": {"content": "Restarted both `checkout-api` pods. **Checkout is responding again:** ..."}}]}', 'data: [DONE]'])),
+  U('f_loop', 'No tool calls → action = done',
+    I('openai_agentic_loop', 'response', null, ['*action: done'])),
+  A('f_store', 'sqlite', RES, E.store, 'Persist resp_turn2c',
+    I('openai_responses_store', 'response', ...storeLines('resp_turn2c'))),
+  A('f_stream', 'client', RES, E.out_cli, 'SSE: text deltas, response.completed resp_turn2c',
+    I('openai_stream_events → sre-assistant', 'response', SSE_H, completedSSE('resp_turn2c', 'Restarted both `checkout-api` pods. ...'))),
+  A('client', 'sre', RES, E.cli_sre, 'Answer: both pods restarted, 2/2 Ready, checkout succeeding',
+    I('sre-assistant output', 'response', ['stdout'], ['Restarted both `checkout-api` pods.', '+**Checkout is responding again:** both replacement pods are Ready (2/2),', '+the service has two ready endpoints, and a recent checkout returned 201.'])),
+]);
+
+// ---------------------------------------------------------------- turn 3
+const T3_TEXT = 'It looks like its fixed, create an incident report using our incident ticket format';
+const turn3 = build([
+  U('checkout', 'checkout-api Ready',
+    I('Cluster state', 'request', null, ['+checkout-api 2/2 Ready']), RES),
+  A('sre', 'client', REQ, E.sre_cli, 'SRE: "' + T3_TEXT + '"',
+    I('SRE prompt', 'request', ['sre-assistant (stdin)'], ['> ' + T3_TEXT])),
+  ...requestPhase('Turn 3', ['"input": "' + T3_TEXT + '",'], '"resp_turn2c"',
+    [...T1_HISTORY, '{"role": "user", "content": "restart the pods"}', '{"type": "mcp_approval_request", ...} ×2', '{"type": "mcp_approval_response", ...} ×2', '{"type": "mcp_call", ...} ×19', '{"type": "message", "role": "assistant", ...}']),
+  ...toInference(1, ['...turn 1 + turn 2 history...', '{"role": "user", "content": "' + T3_TEXT + '"},']),
+  A('openai', 'f_r2c', RES, E.down, 'Model calls file_search ×2 for the incident ticket format',
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, toolCallsSSE([
+      ['file_search', '{\\"query\\": \\"incident ticket contents required fields ...\\"}'],
+      ['file_search', '{\\"query\\": \\"incident report format on-call policy ...\\"}']]))),
+  U('f_loop', 'Dispatchable file_search calls → action = loop',
+    I('openai_agentic_loop', 'response', null, ['collected: file_search ×2', '*action: loop'])),
+  A('f_fs', 'ogx', TOOL, E.fs_ogx, 'file_search ×2 → OGX vector store search',
+    I('openai_file_search_dispatch → OGX', 'request', ...ogxReq('incident ticket contents required fields summary impact timeline root cause evidence linked incidents next steps'))),
+  A('ogx', 'f_fs', RES, E.ogx_fs, 'Results: oncall-escalation, known-issues, INC-4821, INC-4933',
+    I('OGX → openai_file_search_dispatch', 'response', ['HTTP/1.1 200 OK'],
+      ogxRes([FILES.oncall, FILES.known, FILES.inc4821, FILES.inc4933], 'incident ticket contents required fields ...'))),
+  ...chatRound(2, ['...history...', '{"role": "tool", "tool_call_id": "call_2", "content": "<file_search results>"},'],
+    [['openshift__pods_list_in_namespace', '{\\"namespace\\": \\"shop\\"}'], ['openshift__resources_get', '{\\"kind\\": \\"Deployment\\" | \\"Endpoints\\", ...}'], ['openshift__pods_log', '... ×5 (storefront, checkout-api, orders-db)']],
+    'Model re-checks: pods, Deployment, Endpoints, logs ×5'),
+  A('f_mcp', 'mcp', TOOL, E.disp_mcp, 'MCP tools/call ×8',
+    I('openai_mcp_dispatch → openshift-mcp', 'request', MCP_H, [
+      toolsCall('pods_list_in_namespace', '{"namespace": "shop"}'),
+      toolsCall('pods_log', '{"name": "orders-db-0", "namespace": "shop", "tail": 15}'), '... 6 more'])),
+  A('mcp', 'k8s', TOOL, E.mcp_k8s, 'Read pods, Deployment, Endpoints, logs',
+    I('openshift-mcp → Kubernetes API', 'request', ['Authorization: Bearer <mcp-viewer token>'], ['GET /api/v1/namespaces/shop/pods', 'GET .../deployments/checkout-api', 'GET .../endpoints/checkout-api', 'GET .../pods/*/log ×5'])),
+  A('k8s', 'mcp', RES, E.k8s_mcp, 'Evidence: rotation at 22:11:06, auth failures, 201s after restart',
+    I('Kubernetes API → openshift-mcp', 'response', ['HTTP/1.1 200 OK'], [
+      'orders-db-0: credentials rotated (22:11:06)', '!old checkout pods: password authentication failed',
+      '+new checkout pods: order created 201', '+storefront: checkout_5xx=0 in last 60s'])),
+  A('mcp', 'f_mcp', RES, E.mcp_disp, 'mcp_call ×8 emitted',
+    I('openshift-mcp → openai_mcp_dispatch', 'response', ['HTTP/1.1 200 OK'], ['+mcp_call ×8'])),
+  A('f_r2c', 'openai', REQ, E.up, 'Round 3: POST /v1/chat/completions with tool outputs',
+    I('Praxis → OpenAI', 'request', CHAT_H, chatBody(['...history + 10 tool results...']))),
+  A('openai', 'f_r2c', RES, E.down, 'Model writes the incident report',
+    I('OpenAI → Praxis (Chat SSE)', 'response', SSE_H, ['data: {"choices": [{"delta": {"content": "# Incident report INC-4867: checkout errors after database credential rotation"}}]}', '...', 'data: [DONE]'])),
+  U('f_loop', 'No tool calls → action = done',
+    I('openai_agentic_loop', 'response', null, ['*action: done'])),
+  A('f_store', 'sqlite', RES, E.store, 'Persist resp_turn3',
+    I('openai_responses_store', 'response', ...storeLines('resp_turn3'))),
+  A('f_stream', 'client', RES, E.out_cli, 'SSE: report text, response.completed resp_turn3',
+    I('openai_stream_events → sre-assistant', 'response', SSE_H, completedSSE('resp_turn3', '# Incident report INC-4867: ...'))),
+  A('client', 'sre', RES, E.cli_sre, 'Incident report: summary, impact, timeline, root cause, resolution, follow-ups',
+    I('sre-assistant output', 'response', ['stdout'], [
+      '# Incident report INC-4867: checkout errors after database credential rotation',
+      '**Severity:** SEV1   **Status:** Mitigated', '## Summary', '## Impact', '## Timeline (UTC, 2026-10-22)',
+      '## Root cause', '## Evidence', '## Resolution', '+## Follow-up actions: Secret-change-triggered restart (Reloader)'])),
+]);
+
+// ---------------------------------------------------------------- diagram
+const diagram = {
+  meta: { title: 'Shop outage demo · Praxis Responses flow' },
+  canvas: { width: 1340, height: 945 },
+  nodes,
+  tooltips,
+  flows: {
+    turn1: { label: '1. "Is my shop website running ok?"', steps: turn1.steps },
+    turn2: { label: '2. "restart the pods" (approvals)', steps: turn2.steps },
+    turn3: { label: '3. "create an incident report"', steps: turn3.steps },
+  },
+  flowOrder: ['turn1', 'turn2', 'turn3'],
+  inspector: {
+    initialState: { phase: 'request', headers: [], body: [] },
+    mutations: { turn1: turn1.muts, turn2: turn2.muts, turn3: turn3.muts },
+  },
+  legend: [
+    { label: 'Request', color: REQ },
+    { label: 'Response / result', color: RES },
+    { label: 'Tool call run by Praxis', color: TOOL },
+    { label: 'Human approval', color: APPR },
+    { label: 'Error / denied', color: ERR },
+  ],
+};
+
+const viz = new FlowStory(document.getElementById('fs-canvas'), {
+  stepsContainer: document.getElementById('fs-steps-container'),
+  inspectorTitle: document.getElementById('fs-inspector-title'),
+  inspectorContent: document.getElementById('fs-inspector-content'),
+  overlay: document.getElementById('fs-overlay'),
+  overlayCard: document.getElementById('fs-overlay-card'),
+  overlayTitle: document.getElementById('fs-overlay-title'),
+  overlayDesc: document.getElementById('fs-overlay-desc'),
+  overlayDetails: document.getElementById('fs-overlay-details'),
+  overlayAccent: document.getElementById('fs-overlay-accent'),
+  overlayClose: document.getElementById('fs-overlay-close'),
+  overlayResume: document.getElementById('fs-overlay-resume'),
+  highlightBox: document.getElementById('fs-highlight-box'),
+  brand: document.getElementById('fs-brand'),
+  title: document.getElementById('fs-title'),
+  legend: document.getElementById('fs-legend'),
+  flowSelect: document.getElementById('fs-flow-select'),
+  playBtn: document.getElementById('fs-play'),
+  speedBtn: document.getElementById('fs-speed'),
+  loopBtn: document.getElementById('fs-loop'),
+  resetBtn: document.getElementById('fs-reset'),
+  themeBtn: document.getElementById('fs-theme'),
+});
+
+window.__flowstory = viz;
+
+try {
+  await viz.load(diagram);
+
+  viz.state.loopMode = true;
+  const loopBtn = document.getElementById('fs-loop');
+  loopBtn.textContent = '⟳ Loop ON';
+  loopBtn.style.borderColor = '#3fb950';
+  loopBtn.style.color = '#3fb950';
+  viz.play();
+} catch (e) {
+  console.error('FlowStory load error:', e);
+  document.body.innerHTML = `<div style="padding:40px;color:#f85149;font-family:monospace"><h2>FlowStory Load Error</h2><pre>${e.message}\n\n${e.stack || ''}</pre></div>`;
+}
+</script>
+</body>
+</html>

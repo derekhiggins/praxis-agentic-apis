@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Chat with Praxis using OpenShift tools, internal docs, and web search."""
+
+import json
+import os
+from pathlib import Path
+
+from openai import APIError, OpenAI
+
+STATE = Path(__file__).resolve().parents[2] / ".cache/demos/shop-outage/state.json"
+MODEL = os.environ.get("MODEL", "gpt-6-luna")
+URL = os.environ.get("PRAXIS_URL", "http://127.0.0.1:18080")
+WORKLOAD_NAMESPACE = os.environ.get("WORKLOAD_NAMESPACE", "shop")
+READ_TOOLS = [
+    "pods_list_in_namespace", "pods_get", "pods_log", "pods_top",
+    "events_list", "resources_list", "resources_get",
+]
+INSTRUCTIONS = f"""You are the on-call SRE assistant for the online shop.
+Its workloads run in the OpenShift namespace {WORKLOAD_NAMESPACE}: storefront (web frontend),
+checkout-api, and orders-db (PostgreSQL). Use this namespace unless the user specifies another.
+- Verify current state with the OpenShift tools: pods, logs, events, and resources.
+  Start from what users see (storefront logs), then follow the failing dependency.
+- Search internal runbooks and incident reports with file_search; cite them by name.
+- Use web search for upstream documentation on errors and Kubernetes behavior; cite URLs.
+- To restart a pod, delete it with pods_delete; its controller recreates it. Restarts need
+  user approval, so propose one only when evidence supports it, then verify the result.
+Be concise: lead with impact and root cause, then evidence and next steps."""
+
+
+def record(response_id):
+    state = json.loads(STATE.read_text())
+    state["responses"].append(response_id)
+    STATE.write_text(json.dumps(state, indent=2))
+
+
+def show_tool(item):
+    if item.type == "mcp_call":
+        print(f"\n[openshift] {item.name}({item.arguments})")
+        if item.error:
+            print(f"Error: {item.error}")
+    elif item.type == "mcp_approval_request":
+        print(f"\n[approval required] {item.server_label}.{item.name}({item.arguments})")
+    elif item.type == "file_search_call":
+        print(f"\n[file_search] {item.queries}")
+        for result in item.results or []:
+            print(f"  {result.filename}")
+    elif item.type == "web_search_call":
+        action = item.action
+        queries = getattr(action, "queries", None) or [getattr(action, "query", None)]
+        print(f"\n[web_search] {[q for q in queries if q]}")
+        for source in getattr(action, "sources", None) or []:
+            print(f"  {source.url}")
+
+
+def respond(client, tools, previous, user_input):
+    """Stream one response; return the id to continue from and any approval requests."""
+    response_id, approvals = previous, []
+    with client.responses.create(
+        model=MODEL,
+        instructions=INSTRUCTIONS,
+        previous_response_id=previous,
+        input=user_input,
+        store=True,
+        stream=True,
+        reasoning={"effort": "none"},
+        max_output_tokens=2048,
+        include=["file_search_call.results", "web_search_call.action.sources"],
+        tools=tools,
+    ) as stream:
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                print(event.delta, end="", flush=True)
+            elif event.type == "response.output_item.done":
+                show_tool(event.item)
+                if event.item.type == "mcp_approval_request":
+                    approvals.append(event.item)
+            elif event.type == "response.created":
+                record(event.response.id)
+            elif event.type == "response.completed":
+                response_id = event.response.id
+            elif event.type in ("error", "response.failed", "response.incomplete"):
+                print(f"\nError: {event.model_dump_json()}")
+                break
+    return (response_id, approvals) if response_id != previous else (previous, [])
+
+
+def main():
+    if not STATE.exists():
+        raise SystemExit("Run demos/shop-outage/setup.sh first.")
+    store = json.loads(STATE.read_text())["vector_store"]
+    tools = [
+        {"type": "mcp", "server_label": "openshift", "connector_id": "mcp-server",
+         "allowed_tools": [*READ_TOOLS, "pods_delete"],
+         "require_approval": {"always": {"tool_names": ["pods_delete"]},
+                              "never": {"tool_names": READ_TOOLS}}},
+        {"type": "file_search", "vector_store_ids": [store], "max_num_results": 4},
+        {"type": "web_search"},
+    ]
+    previous = None
+    try:
+        with OpenAI(base_url=f"{URL}/v1", api_key="unused", timeout=360, max_retries=0) as client:
+            print(f"Praxis {URL} | model {MODEL} | namespace {WORKLOAD_NAMESPACE}")
+            print("Type a prompt, or exit / quit to finish. Ctrl-D and Ctrl-C also exit.")
+            while True:
+                prompt = input("\n> ").strip()
+                if prompt.lower() in ("exit", "quit"):
+                    break
+                if not prompt:
+                    continue
+                user_input = prompt
+                while user_input:
+                    try:
+                        response_id, approvals = respond(client, tools, previous, user_input)
+                    except APIError as error:
+                        print(f"\nError: {error}")
+                        break
+                    previous = response_id
+                    user_input = [
+                        {"type": "mcp_approval_response", "approval_request_id": item.id,
+                         "approve": input(f"\nApprove {item.name}({item.arguments})? [y/N] ")
+                         .strip().lower() in ("y", "yes")}
+                        for item in approvals
+                    ]
+                print()
+    except (EOFError, KeyboardInterrupt):
+        print()
+
+
+if __name__ == "__main__":
+    main()

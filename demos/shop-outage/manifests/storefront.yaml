@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  labels:
+    app: storefront
+    app.kubernetes.io/part-of: shop
+  annotations:
+    shop.example.com/owner: web-experience
+    shop.example.com/runbook: storefront-runbook.md
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: storefront
+  template:
+    metadata:
+      labels:
+        app: storefront
+        app.kubernetes.io/part-of: shop
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: storefront
+          image: registry.access.redhat.com/ubi9/python-312-minimal:latest
+          command: [python3, storefront.py]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: APP_VERSION
+              value: "5.12.0"
+            - name: CHECKOUT_API_URL
+              value: http://checkout-api:8080/api/v1/checkout
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: app
+              mountPath: /opt/app-root/src
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: app
+          secret:
+            secretName: shop-app
+            items:
+              - key: storefront.py
+                path: storefront.py
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storefront
+  labels:
+    app: storefront
+    app.kubernetes.io/part-of: shop
+spec:
+  selector:
+    app: storefront
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
