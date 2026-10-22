@@ -88,11 +88,14 @@ before MCP and file-search dispatch inside the existing iterative router.
 
 - Source: https://github.com/praxis-proxy/grid
 - Chart: `oci://ghcr.io/praxis-proxy/charts/praxis-gateway`, version `0.2.1`
-- Image: `ghcr.io/praxis-proxy/ai:0.7.0`, pinned in `configs/common-values.yaml` to
-  `sha256:550661eea7e392a9f4415b836e0b2393299f26856bc02cbbc8d3301d49b759f3`
+- Image: `quay.io/higginsd/imagehost:praxis-ai-subrequest-fix`, a custom praxis-ai build
+  pinned in `configs/common-values.yaml` to
+  `sha256:2b8a3cf35338a0a9f099552f2c01d84978bccb442d81f0d84c58f1fae6daac82`
 
 The image digest takes precedence over the tag. To select another image, set its
-repository and digest in your values override file.
+repository and digest in your values override file. Published `ghcr.io/praxis-proxy/ai`
+images from 0.8.0 exclude the experimental Responses and agentic loop filters this config
+uses; build with `--build-arg PRAXIS_AI_FEATURES=full,openai-all,store-sqlite` instead.
 
 ## Storage and upgrades
 

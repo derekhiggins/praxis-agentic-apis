@@ -47,6 +47,7 @@ filter_chains:
           - path_prefix: /v1/responses
             cluster: managed-chat
 
+      # Direct OGX traffic (files, vector stores) branches off here.
       - filter: headers
         conditions:
           - when:
@@ -139,7 +140,8 @@ filter_chains:
 
               - filter: openai_web_search_dispatch
                 provider: brave
-                api_key: ${WEB_SEARCH_API_KEY}
+                api_key:
+                  env_var: WEB_SEARCH_API_KEY
                 max_calls_per_round: 32
 
               - filter: openai_mcp_dispatch
@@ -164,6 +166,9 @@ filter_chains:
 
               - filter: openai_agentic_loop
                 max_infer_iters: 7
+                # Raised to avoid intermittent "MCP dispatch exceeds a processing limit"
+                # errors on large resources_get results; investigate the parse charge.
+                max_retained_bytes: 268435456
 
               - filter: headers
                 request_remove: [x-tenant-id, x-user-id]
@@ -177,6 +182,7 @@ filter_chains:
                 cluster_source: bound_upstream
                 clusters:
                   - name: managed-chat
+                    idle_timeout_ms: 30000
                     http:
                       application_protocol: openai_chat_completions
                       application_provider: managed

@@ -122,11 +122,15 @@ Deploy one of these servers in `$NAMESPACE`:
   MCP_SERVER_URL=http://openshift-mcp:8080/mcp bash ./scripts/deploy.sh
   ```
 
-  It runs read-only with the `core` toolset and a ServiceAccount bound to `view`
-  in `$NAMESPACE` only, so it can read pods, logs, events, and resources there
-  but not Secrets or other namespaces. Its NetworkPolicy admits only Praxis pods
-  and the operator in `redhat-ods-applications`. Anyone who can reach Praxis can
-  read `$NAMESPACE` through it.
+  It uses the `core` toolset with `enabled_tools` limited to read tools plus
+  `pods_delete`, and a ServiceAccount bound to `view` in `$NAMESPACE` only, so it
+  can read pods, logs, events, and resources there but not Secrets or other
+  namespaces. `view` does not allow deleting pods; a namespace needs an extra
+  Role for that, as the [shop-outage demo](demos/shop-outage/README.md) adds.
+  Its NetworkPolicy admits only Praxis pods and the operator in
+  `redhat-ods-applications`. Anyone who can reach Praxis can use these tools.
+  `require_approval` is chosen by the caller, so it is not an access control;
+  RBAC is.
 
 ## Verify and access
 

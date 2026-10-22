@@ -23,8 +23,15 @@ data:
   config.toml: |
     log_level = 2
     port = "8080"
-    read_only = true
+    read_only = false
+    disable_destructive = false
     toolsets = ["core"]
+    # Read tools plus pods_delete; RBAC limits what pods_delete can reach.
+    enabled_tools = [
+      "events_list", "namespaces_list", "pods_get", "pods_list", "pods_list_in_namespace",
+      "pods_log", "pods_top", "projects_list", "resources_get", "resources_list",
+      "pods_delete",
+    ]
 ---
 apiVersion: mcp.x-k8s.io/v1beta1
 kind: MCPServer
