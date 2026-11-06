@@ -29,8 +29,9 @@ cleanup() {
   exit "$rc"
 }
 
-if [[ -z $(oc -n "$NAMESPACE" get "deployment/$RELEASE" -o jsonpath='{.spec.template.spec.containers[?(@.name=="praxis")].env[?(@.name=="WEB_SEARCH_API_KEY")].name}') ]]; then
-  echo "Web search is not enabled on $RELEASE; deploy with ENABLE_WEB_SEARCH=true" >&2
+if ! oc -n "$NAMESPACE" get "configmap/$RELEASE-config" -o jsonpath='{.data.praxis\.yaml}' |
+  grep -q openai_web_search_dispatch; then
+  echo "Web search is not enabled on $RELEASE; deploy with --set global.webSearch.enabled=true" >&2
   exit 1
 fi
 

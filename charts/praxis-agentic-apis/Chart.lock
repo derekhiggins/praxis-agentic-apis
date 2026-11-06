@@ -1,0 +1,6 @@
+dependencies:
+- name: praxis-gateway
+  repository: oci://ghcr.io/praxis-proxy/charts
+  version: 0.3.0
+digest: sha256:2fd1c2e0b023e4bb9c66a2f3c082855e50958ca35e90a540593c9d6ea1c4da90
+generated: "2026-11-10T12:14:03.853972837Z"

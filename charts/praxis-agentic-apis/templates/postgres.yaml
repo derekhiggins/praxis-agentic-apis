@@ -1,0 +1,134 @@
+{{- if not .Values.global.database.host }}
+{{- $secretName := include "praxis-agentic-apis.postgresSecret" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
+{{- $password := "" }}
+{{- if $existing }}
+{{- $password = index $existing.data "POSTGRESQL_PASSWORD" | b64dec }}
+{{- else }}
+{{- $password = randAlphaNum 48 }}
+{{- end }}
+# The data directory is initialized with these credentials, so keep the Secret
+# and volume on uninstall and reuse an existing password.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  labels:
+    {{- include "praxis-agentic-apis.postgresLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  POSTGRESQL_USER: {{ .Values.global.database.user | quote }}
+  POSTGRESQL_DATABASE: {{ .Values.global.database.name | quote }}
+  POSTGRESQL_PASSWORD: {{ $password | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "praxis-agentic-apis.postgresLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "praxis-agentic-apis.postgresLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "praxis-agentic-apis.postgresLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "praxis-agentic-apis.postgresLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgresql
+          image: {{ .Values.postgres.image }}
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef: {name: {{ $secretName }}, key: POSTGRESQL_USER}
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef: {name: {{ $secretName }}, key: POSTGRESQL_DATABASE}
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $secretName }}, key: POSTGRESQL_PASSWORD}
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: [/usr/libexec/check-container]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [/usr/libexec/check-container, --live]
+            initialDelaySeconds: 120
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "praxis-agentic-apis.postgresLabels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "praxis-agentic-apis.postgresLabels" . | nindent 4 }}
+  ports:
+    - name: postgresql
+      port: {{ .Values.global.database.port }}
+      targetPort: postgresql
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels:
+    {{- include "praxis-agentic-apis.postgresLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "praxis-agentic-apis.postgresLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "praxis-agentic-apis.gatewaySelector" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
