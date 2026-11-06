@@ -76,7 +76,8 @@ for stream in false true; do
   jq -e '
     .status == "completed" and
     any(.output[]; .type == "web_search_call" and .status == "completed" and
-      .action.type == "search" and (.action.query | length > 0) and
+      .action.type == "search" and
+      ((.action.queries // [.action.query]) | any(.[]; type == "string" and length > 0)) and
       any(.action.sources[]?; .url | test("^https?://"))) and
     any(.output[]?.content[]?; .type == "output_text" and (.text | length > 0))
   ' "$RESPONSE" >/dev/null
