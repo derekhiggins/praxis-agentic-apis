@@ -8,7 +8,7 @@
 # previous run of either repo:
 #
 #   ogx-showroom:  rhoai-catalog CatalogSource + redhat-ods-operator namespace
-#   praxis:        NAMESPACE and the praxis-gateway Helm release inside it
+#   praxis:        NAMESPACE, its Helm release, and RELEASE-ogx in OGX_NAMESPACE
 #
 # Usage (env-driven):
 #   NAMESPACE=praxis-standalone RELEASE=praxis-gateway MAX_WAIT=300 INTERVAL=30 \
@@ -20,6 +20,7 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-praxis-standalone}"
 RELEASE="${RELEASE:-praxis-gateway}"
+OGX_NAMESPACE="${OGX_NAMESPACE:-redhat-ods-applications}"
 MAX_WAIT="${MAX_WAIT:-300}"
 INTERVAL="${INTERVAL:-30}"
 
@@ -43,6 +44,11 @@ while [ "$elapsed" -lt "$MAX_WAIT" ]; do
     clean=false
   elif helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
     echo "⏳ helm release $RELEASE exists in $NAMESPACE - waiting for cleanup..."
+    clean=false
+  fi
+
+  if oc get networkpolicy "$RELEASE-ogx" -n "$OGX_NAMESPACE" >/dev/null 2>&1; then
+    echo "NetworkPolicy $RELEASE-ogx exists in $OGX_NAMESPACE - waiting for cleanup..."
     clean=false
   fi
 

@@ -22,8 +22,8 @@ checkout returns 502. The fix is restarting the `checkout-api` pods.
 
 ## Run
 
-Prerequisites: Praxis deployed with web search and the OpenShift MCP server
-from `infra/mcp/openshift/mcpserver.yaml`, which enables `pods_delete` (see the
+Prerequisites: Praxis deployed with web search and the chart-managed OpenShift
+MCP server, which enables `pods_delete` (see the
 top-level [README](../../README.md)).
 
 ```bash

@@ -21,7 +21,7 @@ global:
         app.kubernetes.io/instance: ogx-distribution
   mcp:
     # MCP server for the mcp-server connector.
-    serverUrl: http://mcp-test:3001/mcp
+    serverUrl: http://openshift-mcp:8080/mcp
   webSearch:
     # Brave web search.
     enabled: false
@@ -39,6 +39,12 @@ global:
     # Secret holding the password under POSTGRESQL_PASSWORD. Empty: <release>-postgres.
     # The in-chart PostgreSQL creates it when missing.
     secretName: ""
+
+openshiftMcp:
+  # Requires the MCP Lifecycle Operator and MCPServer CRD.
+  enabled: true
+  image: registry.redhat.io/openshift-mcp/openshift-mcp-server-rhel9@sha256:a551fd58f7b2a7505a76ba2109ae5a8f031606605490c9c68d60f91f502f6fe5
+  operatorNamespace: redhat-ods-applications
 
 postgres:
   image: quay.io/sclorg/postgresql-16-c9s@sha256:1e47f477e07d4378179a21f9cc88402ad39aa32789e0cd62fe2cef16c2a7bbdf
@@ -60,7 +66,6 @@ praxis-gateway:
   # /ready would fail while any upstream is down.
   health:
     readiness:
-      tcpSocket: null
       exec:
         command: [wget, -qO-, http://127.0.0.1:9901/healthy]
 

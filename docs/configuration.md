@@ -16,7 +16,10 @@ renders its config from them. Defaults are in
 | `global.ogx.endpoint` | `<service>.<namespace>.svc.cluster.local:<port>` | OGX host:port override |
 | `global.ogx.networkPolicy.enabled` | `true` | Create `${RELEASE}-ogx` in the OGX namespace |
 | `global.ogx.networkPolicy.podSelector` | `app: ogx`, `app.kubernetes.io/instance: ogx-distribution` | OGX pod labels |
-| `global.mcp.serverUrl` | `http://mcp-test:3001/mcp` | MCP server for the `mcp-server` connector; set `http://openshift-mcp:8080/mcp` for the OpenShift MCP server |
+| `global.mcp.serverUrl` | `http://openshift-mcp:8080/mcp` | MCP server for the `mcp-server` connector |
+| `openshiftMcp.enabled` | `true` | Deploy OpenShift MCP resources; requires the MCP Lifecycle Operator |
+| `openshiftMcp.image` | see values file | Pinned OpenShift MCP server image |
+| `openshiftMcp.operatorNamespace` | `redhat-ods-applications` | Operator namespace allowed by MCP ingress policy |
 | `global.webSearch.enabled` | `false` | Enable Brave web search |
 | `global.webSearch.secretName` | `brave-search` | Secret with the Brave key |
 | `global.database.host` | empty (deploy in-chart PostgreSQL) | External PostgreSQL hostname |
@@ -33,6 +36,31 @@ pipeline uses HTTPS and `/v1/chat/completions`; other transports or API paths
 require an alternate pipeline. `global.ogx.endpoint` does not change the
 NetworkPolicy target, so keep its namespace, pod labels, and port consistent
 with your OGX deployment.
+
+## OpenShift MCP
+
+The chart owns `mcp-viewer` (ServiceAccount), `mcp-viewer-view` (RoleBinding),
+`openshift-mcp-server-config` (ConfigMap), and `openshift-mcp` (MCPServer).
+The MCP Lifecycle Operator creates the server Deployment, Service, and
+NetworkPolicy. Enable the operator before installing the chart; see
+[setup](../README.md#mcp-server).
+
+To adopt manually installed resources into this release before upgrading:
+
+```bash
+resources=(serviceaccount/mcp-viewer rolebinding/mcp-viewer-view
+  configmap/openshift-mcp-server-config mcpserver/openshift-mcp)
+oc -n "$NAMESPACE" label "${resources[@]}" \
+  app.kubernetes.io/managed-by=Helm --overwrite
+oc -n "$NAMESPACE" annotate "${resources[@]}" \
+  meta.helm.sh/release-name="$RELEASE" \
+  meta.helm.sh/release-namespace="$NAMESPACE" --overwrite
+```
+
+Only adopt resources not owned by another Helm release. Disabling
+`openshiftMcp.enabled` or uninstalling the chart removes these resources and
+the operator-managed server. To use an external server instead, also set
+`global.mcp.serverUrl` to its URL.
 
 ## Credentials
 

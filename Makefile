@@ -43,7 +43,7 @@ tools:
 lint: lint-shellcheck lint-yamllint lint-actionlint lint-ruff
 
 lint-shellcheck:
-	rc=0; while IFS= read -r script; do echo "shellcheck: $$script"; shellcheck "$$script" || rc=1; done < <(find scripts tests demos .github/scripts -name '*.sh' -type f | sort); exit $$rc
+	rc=0; while IFS= read -r script; do echo "shellcheck: $$script"; shellcheck "$$script" || rc=1; done < <(find tests demos .github/scripts -name '*.sh' -type f | sort); exit $$rc
 
 lint-yamllint:
 	yamllint --strict charts/praxis-agentic-apis/Chart.yaml charts/praxis-agentic-apis/values.yaml demos/shop-outage/manifests/ .github/workflows/ .yamllint.yaml

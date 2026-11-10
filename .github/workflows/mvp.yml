@@ -127,6 +127,13 @@ jobs:
           oc -n redhat-ods-applications rollout status deployment/ogx-distribution \
             --timeout=300s
 
+      - name: Enable MCP Lifecycle Operator
+        run: |
+          oc patch datasciencecluster default-dsc --type=merge \
+            -p '{"spec":{"components":{"mcplifecycleoperator":{"managementState":"Managed"}}}}'
+          oc wait datasciencecluster/default-dsc \
+            --for=condition=MCPLifecycleOperatorReady --timeout=300s
+
       - name: Deploy praxis-gateway
         env:
           NAMESPACE: praxis-standalone

@@ -21,6 +21,9 @@ pods in its namespace or through port-forwarding. No public Route is configured.
   both the target and OGX namespaces.
 - A default StorageClass for the in-chart PostgreSQL volume, or an existing
   PostgreSQL database (see [storage](docs/configuration.md#storage-and-upgrades)).
+- The MCP Lifecycle Operator enabled and serving `mcp.x-k8s.io/v1beta1`
+  `MCPServer` resources for the default OpenShift MCP server
+  (see [MCP setup](#mcp-server)), or `openshiftMcp.enabled=false` for an external server.
 
 OGX and inference backends are not installed by this repository.
 
@@ -61,7 +64,7 @@ Keep the release name `praxis-gateway`, or set
 named after the release as the tests expect.
 
 The chart installs Praxis, a PostgreSQL database with a generated password
-Secret (`${RELEASE}-postgres`), and these NetworkPolicies:
+Secret (`${RELEASE}-postgres`), the OpenShift MCP server, and these NetworkPolicies:
 - `${RELEASE}` allows only same-namespace pods to reach this release's Praxis
   pods on port 8080. Egress is unchanged; port-forwarding remains available.
 - `${RELEASE}-ogx`, in the OGX namespace, permits this release's pods to reach
@@ -107,34 +110,40 @@ back to the model through the agentic loop. To disable search, upgrade without
 Praxis has one MCP connector, `mcp-server`, pointing at `global.mcp.serverUrl`.
 Requests use
 `tools: [{"type":"mcp","server_label":"<label>","connector_id":"mcp-server","require_approval":"never"}]`.
-Deploy one of these servers in `$NAMESPACE`:
+The chart installs the OpenShift MCP server by default and requires an operator
+serving `mcp.x-k8s.io/v1beta1`. Operators serving only `v1alpha1` are not supported
+by the chart-managed server; use an external MCP server instead.
 
-- Test server (default URL), used by `tests/mcp.sh`:
+Before installing the chart, enable the MCP Lifecycle Operator in your OpenShift
+AI cluster:
 
-  ```bash
-  oc -n "$NAMESPACE" apply -f infra/mcp/everything/deployment.yaml
-  ```
+```bash
+oc patch datasciencecluster default-dsc --type=merge \
+  -p '{"spec":{"components":{"mcplifecycleoperator":{"managementState":"Managed"}}}}'
+oc wait datasciencecluster/default-dsc \
+  --for=condition=MCPLifecycleOperatorReady --timeout=300s
+```
 
-- OpenShift MCP Server from the RHOAI MCP catalogue, deployed through the MCP
-  Lifecycle Operator (requires the `mcplifecycleoperator` DataScienceCluster
-  component to be `Managed`):
+After installing the chart, wait for the server handshake:
 
-  ```bash
-  oc -n "$NAMESPACE" apply -f infra/mcp/openshift/mcpserver.yaml
-  oc -n "$NAMESPACE" wait mcpserver/openshift-mcp --for=condition=Verified --timeout=300s
-  helm upgrade --install "$RELEASE" charts/praxis-agentic-apis -n "$NAMESPACE" \
-    --set global.mcp.serverUrl=http://openshift-mcp:8080/mcp --wait
-  ```
+```bash
+oc -n "$NAMESPACE" wait mcpserver/openshift-mcp --for=condition=Verified --timeout=300s
+```
 
-  It uses the `core` toolset with `enabled_tools` limited to read tools plus
-  `pods_delete`, and a ServiceAccount bound to `view` in `$NAMESPACE` only, so it
-  can read pods, logs, events, and resources there but not Secrets or other
-  namespaces. `view` does not allow deleting pods; a namespace needs an extra
-  Role for that, as the [shop-outage demo](demos/shop-outage/README.md) adds.
-  Its NetworkPolicy admits only Praxis pods and the operator in
-  `redhat-ods-applications`. Anyone who can reach Praxis can use these tools.
-  `require_approval` is chosen by the caller, so it is not an access control;
-  RBAC is.
+It uses the `core` toolset with `enabled_tools` limited to read tools plus
+`pods_delete`, and a ServiceAccount bound to `view` in `$NAMESPACE` only, so it
+can read pods, logs, events, and resources there but not Secrets or other
+namespaces. `view` does not allow deleting pods; a namespace needs an extra
+Role for that, as the [shop-outage demo](demos/shop-outage/README.md) adds.
+Its NetworkPolicy admits only this release's Praxis pods and the operator in
+`redhat-ods-applications`. Anyone who can reach Praxis can use these tools.
+`require_approval` is chosen by the caller, so it is not an access control;
+RBAC is. `tests/mcp.sh` checks discovery and read-only pod access.
+
+For an external MCP server, set `openshiftMcp.enabled=false` and
+`global.mcp.serverUrl` to its URL. Only one release per namespace can own the
+fixed-name OpenShift MCP resources. For existing manually installed resources,
+see [Helm adoption](docs/configuration.md#openshift-mcp).
 
 ## Verify and access
 
