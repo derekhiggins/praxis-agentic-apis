@@ -2,7 +2,7 @@
 #
 # Manually dispatched (workflow_dispatch only). Proves the composition once:
 #   ogx-showroom provisions OGX on the shared ROSA cluster
-#   → scripts/deploy.sh installs praxis-gateway in front of it
+#   → helm installs charts/praxis-agentic-apis in front of it
 #   → tests/smoke.sh passes
 #   → cluster is always torn down again.
 #
@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       praxis_image:
-        description: 'praxis-ai image override, as repo:tag or repo@sha256:... (default: common-values.yaml pin)'
+        description: 'praxis-ai image override, as repo:tag or repo@sha256:... (default: chart values pin)'
         required: false
         type: string
 
@@ -127,6 +127,13 @@ jobs:
           oc -n redhat-ods-applications rollout status deployment/ogx-distribution \
             --timeout=300s
 
+      - name: Enable MCP Lifecycle Operator
+        run: |
+          oc patch datasciencecluster default-dsc --type=merge \
+            -p '{"spec":{"components":{"mcplifecycleoperator":{"managementState":"Managed"}}}}'
+          oc wait datasciencecluster/default-dsc \
+            --for=condition=MCPLifecycleOperatorReady --timeout=300s
+
       - name: Deploy praxis-gateway
         env:
           NAMESPACE: praxis-standalone
@@ -134,55 +141,50 @@ jobs:
           LITEMAAS_URL: ${{ vars.LITEMAAS_URL }}
           PRAXIS_IMAGE: ${{ inputs.praxis_image }}
         run: |
-          # deploy.sh needs PyYAML for its web-search config rewrite.
-          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
-
-          # Backend credential Secret (deploy.sh expects it pre-existing).
+          # Backend credential Secret (the chart expects it pre-existing).
           oc create namespace "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
           oc -n "$NAMESPACE" create secret generic openai \
             --from-literal=OPENAI_API_KEY="$LITEMAAS_API_KEY" \
             --dry-run=client -o yaml | oc apply -f -
 
           # Point the inference backend at LiteMaaS.
-          # LITEMAAS_URL is a full URL; INFERENCE_HOST must be a bare hostname.
+          # LITEMAAS_URL is a full URL; global.inference.host must be a bare hostname.
           host=${LITEMAAS_URL#https://}
           host=${host%%/*}
-          INFERENCE_PORT=443
+          port=443
           if [[ $host == *:* ]]; then
-            INFERENCE_PORT=${host##*:}
+            port=${host##*:}
             host=${host%%:*}
           fi
-          export INFERENCE_HOST="$host" INFERENCE_PORT
+          args=(--set-string "global.inference.host=$host" --set "global.inference.port=$port")
 
           # Optional praxis-ai image override.
           # Accepts repo:tag or repo@sha256:...; tags are resolved to digests
-          # when skopeo is available, otherwise passed through (deploy.sh
-          # clears the pinned digest so a tag alone still takes effect).
+          # when skopeo is available, otherwise the tag is used and the pinned
+          # digest cleared so it takes effect.
           if [[ -n "$PRAXIS_IMAGE" ]]; then
             if [[ $PRAXIS_IMAGE == *@sha256:* ]]; then
-              export PRAXIS_IMAGE_REPO="${PRAXIS_IMAGE%@*}"
-              export PRAXIS_IMAGE_DIGEST="${PRAXIS_IMAGE#*@}"
+              repo="${PRAXIS_IMAGE%@*}" digest="${PRAXIS_IMAGE#*@}" tag=
             else
-              repo="${PRAXIS_IMAGE%:*}"
-              tag="${PRAXIS_IMAGE##*:}"
-              if [[ -n "$tag" && "$tag" != "$PRAXIS_IMAGE" && "$repo" != "$PRAXIS_IMAGE" ]]; then
-                if command -v skopeo >/dev/null 2>&1; then
-                  if digest=$(skopeo inspect --format '{{.Digest}}' "docker://$PRAXIS_IMAGE"); then
-                    export PRAXIS_IMAGE_REPO="$repo" PRAXIS_IMAGE_DIGEST="$digest"
-                  else
-                    echo "skopeo digest resolution failed; falling back to tag"
-                    export PRAXIS_IMAGE_REPO="$repo" PRAXIS_IMAGE_TAG="$tag"
-                  fi
-                else
-                  export PRAXIS_IMAGE_REPO="$repo" PRAXIS_IMAGE_TAG="$tag"
-                fi
-              else
-                export PRAXIS_IMAGE_REPO="$PRAXIS_IMAGE"
+              repo="${PRAXIS_IMAGE%:*}" tag="${PRAXIS_IMAGE##*:}" digest=
+              if [[ "$tag" == "$PRAXIS_IMAGE" || "$repo" == "$PRAXIS_IMAGE" ]]; then
+                repo="$PRAXIS_IMAGE" tag=
+              elif command -v skopeo >/dev/null 2>&1; then
+                digest=$(skopeo inspect --format '{{.Digest}}' "docker://$PRAXIS_IMAGE") ||
+                  { echo "skopeo digest resolution failed; falling back to tag"; digest=; }
               fi
+            fi
+            args+=(--set-string "praxis-gateway.image.repository=$repo")
+            if [[ -n "$digest" ]]; then
+              args+=(--set-string "praxis-gateway.image.digest=$digest")
+            elif [[ -n "$tag" ]]; then
+              args+=(--set-string "praxis-gateway.image.tag=$tag" --set-string "praxis-gateway.image.digest=")
             fi
           fi
 
-          scripts/deploy.sh
+          helm dependency build charts/praxis-agentic-apis
+          helm upgrade --install praxis-gateway charts/praxis-agentic-apis \
+            --namespace "$NAMESPACE" "${args[@]}" --wait --timeout 5m
 
       - name: Smoke test (no inference calls)
         env:
@@ -215,9 +217,10 @@ jobs:
           NAMESPACE: praxis-standalone
         run: |
           rc=0
-          scripts/cleanup.sh || rc=$?
-          # Also remove the namespace so the credential Secret and any
-          # residues do not leak between runs.
+          helm uninstall praxis-gateway --namespace "$NAMESPACE" \
+            --ignore-not-found --wait --timeout 5m || rc=$?
+          # Also remove the namespace so the credential Secret, the kept
+          # PostgreSQL volume and Secret, and any residues do not leak between runs.
           oc delete namespace "$NAMESPACE" --ignore-not-found --timeout=120s || rc=$?
           exit "$rc"
 

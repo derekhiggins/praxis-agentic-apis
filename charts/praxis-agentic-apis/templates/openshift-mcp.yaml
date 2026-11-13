@@ -1,3 +1,4 @@
+{{- if .Values.openshiftMcp.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -41,7 +42,7 @@ spec:
   source:
     type: ContainerImage
     containerImage:
-      ref: registry.redhat.io/openshift-mcp/openshift-mcp-server-rhel9@sha256:a551fd58f7b2a7505a76ba2109ae5a8f031606605490c9c68d60f91f502f6fe5
+      ref: {{ .Values.openshiftMcp.image | quote }}
   config:
     port: 8080
     path: /mcp
@@ -57,13 +58,14 @@ spec:
     ingressFrom:
       - podSelector:
           matchLabels:
-            app.kubernetes.io/name: praxis-gateway
+            {{- include "praxis-agentic-apis.gatewaySelector" . | nindent 12 }}
       - namespaceSelector:
           matchLabels:
-            kubernetes.io/metadata.name: redhat-ods-applications
+            kubernetes.io/metadata.name: {{ .Values.openshiftMcp.operatorNamespace | quote }}
         podSelector:
           matchLabels:
             app.kubernetes.io/name: mcp-lifecycle-operator
   runtime:
     security:
       serviceAccountName: mcp-viewer
+{{- end }}

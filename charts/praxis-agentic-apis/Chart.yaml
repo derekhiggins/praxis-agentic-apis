@@ -1,0 +1,9 @@
+apiVersion: v2
+name: praxis-agentic-apis
+description: Standalone Praxis serving the Responses and Conversations APIs with an agentic tool loop, backed by PostgreSQL and OGX.
+type: application
+version: 0.1.0
+dependencies:
+  - name: praxis-gateway
+    version: 0.3.0
+    repository: oci://ghcr.io/praxis-proxy/charts

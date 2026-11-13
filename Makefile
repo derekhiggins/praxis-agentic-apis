@@ -16,7 +16,7 @@ RUFF_VERSION := 0.17.3
 ACTIONLINT_VERSION := 1.7.12
 ACTIONLINT_SHA256_LINUX_AMD64 := 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
 
-# Render defaults — mirror scripts/deploy.sh (nothing cluster-specific).
+# Cluster-neutral render defaults.
 OGX_ENDPOINT ?= ogx-distribution-service.redhat-ods-applications.svc.cluster.local:8321
 INFERENCE_HOST ?= litemaas.example.com
 INFERENCE_PORT ?= 443
@@ -43,10 +43,10 @@ tools:
 lint: lint-shellcheck lint-yamllint lint-actionlint lint-ruff
 
 lint-shellcheck:
-	rc=0; while IFS= read -r script; do echo "shellcheck: $$script"; shellcheck "$$script" || rc=1; done < <(find scripts tests demos .github/scripts -name '*.sh' -type f | sort); exit $$rc
+	rc=0; while IFS= read -r script; do echo "shellcheck: $$script"; shellcheck "$$script" || rc=1; done < <(find tests demos .github/scripts -name '*.sh' -type f | sort); exit $$rc
 
 lint-yamllint:
-	yamllint --strict configs/ demos/shop-outage/manifests/ .github/workflows/ .yamllint.yaml
+	yamllint --strict charts/praxis-agentic-apis/Chart.yaml charts/praxis-agentic-apis/values.yaml demos/shop-outage/manifests/ .github/workflows/ .yamllint.yaml
 
 lint-actionlint:
 	actionlint
@@ -54,18 +54,14 @@ lint-actionlint:
 lint-ruff:
 	ruff check demos/shop-outage/sre-assistant demos/shop-outage/app/
 
-## render: chart render dry-run mirroring scripts/deploy.sh's render path
-## (envsubst -> helm template), no cluster writes. Helm 3 and Helm 4 render
-## the same way; no post-renderer is involved.
+## render: build dependencies and render the umbrella chart without cluster writes.
 render:
 	# PyYAML is needed by the assertion below.
 	python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
-	work="$$(mktemp -d)"; \
-	envsubst '$${OGX_ENDPOINT} $${INFERENCE_HOST} $${INFERENCE_PORT} $${MCP_SERVER_URL}' \
-		< configs/openai-ogx/config.yaml > "$$work/config.yaml"; \
-	helm template praxis-gateway \
-		oci://ghcr.io/praxis-proxy/charts/praxis-gateway --version 0.2.1 \
-		-f configs/common-values.yaml -f configs/openai-ogx/values.yaml \
-		--set-string fullnameOverride=praxis-gateway \
-		--set-file "config.inline=$$work/config.yaml" > "$$work/rendered.yaml"; \
-	python3 -c 'import sys, yaml; docs = list(yaml.safe_load_all(open(sys.argv[1]))); assert docs, "rendered output is empty"; print(f"rendered.yaml: valid YAML, {len(docs)} resources")' "$$work/rendered.yaml"
+	helm dependency build charts/praxis-agentic-apis
+	helm template praxis-gateway charts/praxis-agentic-apis \
+		--set-string "global.ogx.endpoint=$(OGX_ENDPOINT)" \
+		--set-string "global.inference.host=$(INFERENCE_HOST)" \
+		--set "global.inference.port=$(INFERENCE_PORT)" \
+		--set-string "global.mcp.serverUrl=$(MCP_SERVER_URL)" | \
+		python3 -c 'import sys, yaml; docs = list(yaml.safe_load_all(sys.stdin)); assert docs, "rendered output is empty"; print(f"rendered.yaml: valid YAML, {len(docs)} resources")'

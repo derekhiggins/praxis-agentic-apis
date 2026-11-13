@@ -14,54 +14,62 @@ pods in its namespace or through port-forwarding. No public Route is configured.
 ## Prerequisites
 
 - A Kubernetes/OpenShift cluster with the intended context selected in `oc`.
-- Bash, Helm, `oc`, Python 3 with PyYAML, and `envsubst` (GNU gettext).
+- Helm 3.12+ and `oc`.
 - An inference backend API key and a model supporting tool calls.
 - OGX with Files/Vector Stores, an embedding model, and a vector store provider.
 - Permission to install in the target namespace and manage NetworkPolicies in
   both the target and OGX namespaces.
-- A default StorageClass for the in-repo PostgreSQL volume, or an existing
+- A default StorageClass for the in-chart PostgreSQL volume, or an existing
   PostgreSQL database (see [storage](docs/configuration.md#storage-and-upgrades)).
+- The MCP Lifecycle Operator enabled and serving `mcp.x-k8s.io/v1beta1`
+  `MCPServer` resources for the default OpenShift MCP server
+  (see [MCP setup](#mcp-server)), or `openshiftMcp.enabled=false` for an external server.
 
 OGX and inference backends are not installed by this repository.
 
 ## Install
 
-Run these commands from the repository root. Select deployment settings before
-creating the Secret; exported settings also apply to deployment and tests:
+The chart is `charts/praxis-agentic-apis`. Run these commands from the
+repository root. Tests and examples use these names:
 
 ```bash
 export NAMESPACE=praxis-standalone
 export RELEASE=praxis-gateway
-export API_KEY_SECRET=openai
-export API_KEY_SECRET_KEY=OPENAI_API_KEY
 ```
 
-Read the backend key interactively, or supply it through your secret manager.
-Create the namespace first so the Secret can be created before deployment.
-The installer also ensures the namespace exists. This creates or refreshes the
-Secret without writing the key to a local file:
+Create the namespace and the backend key Secret. This reads the key
+interactively without writing it to a local file:
 
 ```bash
 set +x
 read -rsp 'Backend API key: ' OPENAI_API_KEY
 printf '\n'
 oc create namespace "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
-oc -n "$NAMESPACE" create secret generic "$API_KEY_SECRET" \
-  --from-file="$API_KEY_SECRET_KEY"=<(printf %s "$OPENAI_API_KEY") \
+oc -n "$NAMESPACE" create secret generic openai \
+  --from-file=OPENAI_API_KEY=<(printf %s "$OPENAI_API_KEY") \
   --dry-run=client -o yaml | oc apply --server-side -f -
 unset OPENAI_API_KEY
-
-bash ./scripts/deploy.sh
 ```
 
-The installer ensures the Praxis namespace exists, deploys PostgreSQL from
-`infra/postgres/` (generating its credential Secret `${RELEASE}-postgres` on first
-run), then creates or updates NetworkPolicies before installing the published
-Helm chart:
-- `${RELEASE}-ingress` allows only same-namespace pods to reach this release's
-  Praxis pods on port 8080. Egress is unchanged; port-forwarding remains available.
-- `${RELEASE}-ogx` permits this release's pods to reach the selected OGX pods
-  on `OGX_PORT` in the OGX namespace.
+Install:
+
+```bash
+helm dependency build charts/praxis-agentic-apis
+helm upgrade --install "$RELEASE" charts/praxis-agentic-apis \
+  --namespace "$NAMESPACE" --wait --timeout 5m
+```
+
+Keep the release name `praxis-gateway`, or set
+`praxis-gateway.fullnameOverride` to the release name, so the Deployment is
+named after the release as the tests expect.
+
+The chart installs Praxis, a PostgreSQL database with a generated password
+Secret (`${RELEASE}-postgres`), the OpenShift MCP server, and these NetworkPolicies:
+- `${RELEASE}` allows only same-namespace pods to reach this release's Praxis
+  pods on port 8080. Egress is unchanged; port-forwarding remains available.
+- `${RELEASE}-ogx`, in the OGX namespace, permits this release's pods to reach
+  the selected OGX pods on the OGX port. Disable it with
+  `--set global.ogx.networkPolicy.enabled=false`.
 - `${RELEASE}-postgres` allows only this release's Praxis pods to reach
   PostgreSQL on port 5432.
 
@@ -70,74 +78,72 @@ an ingress policy can restrict previously unisolated pods, so review the target
 labels first. Namespace isolation is not authentication: all allowed callers
 share the same Praxis identity and data.
 
-See [configuration](docs/configuration.md) for deployment settings, selecting
-multiple configs, the pinned chart/image, and storage/upgrade behavior,
-including using an external PostgreSQL (`DATABASE_HOST`).
-
-The default config is `configs/openai-ogx/`, with shared Helm defaults in
-`configs/common-values.yaml`. Select another directory with `CONFIG_DIR`:
-
-```bash
-CONFIG_DIR=configs/openai-ogx bash ./scripts/deploy.sh
-```
+See [configuration](docs/configuration.md) for chart values, alternate
+pipelines, the pinned image, and storage/upgrade behavior, including using an
+external PostgreSQL.
 
 ### Optional web search
 
 Web search is disabled by default. To enable it, create a namespace-local Secret
-with your Brave Search API key, then deploy with `ENABLE_WEB_SEARCH=true`:
+with your Brave Search API key, then set `global.webSearch.enabled=true`:
 
 ```bash
-export WEB_SEARCH_API_KEY_SECRET=brave-search
-export WEB_SEARCH_API_KEY_SECRET_KEY=WEB_SEARCH_API_KEY
 set +x
 read -rsp 'Brave Search API key: ' WEB_SEARCH_API_KEY
 printf '\n'
-oc -n "$NAMESPACE" create secret generic "$WEB_SEARCH_API_KEY_SECRET" \
-  --from-file="$WEB_SEARCH_API_KEY_SECRET_KEY"=<(printf %s "$WEB_SEARCH_API_KEY") \
+oc -n "$NAMESPACE" create secret generic brave-search \
+  --from-file=WEB_SEARCH_API_KEY=<(printf %s "$WEB_SEARCH_API_KEY") \
   --dry-run=client -o yaml | oc apply --server-side -f -
 unset WEB_SEARCH_API_KEY
 
-ENABLE_WEB_SEARCH=true bash ./scripts/deploy.sh
+helm upgrade --install "$RELEASE" charts/praxis-agentic-apis -n "$NAMESPACE" \
+  --set global.webSearch.enabled=true --wait
 ```
 
 All callers share this key and its billing account. Requests opt into search with
 `tools: [{"type":"web_search"}]`. Praxis executes Brave searches and feeds results
-back to the model through the agentic loop. To disable search, redeploy without
-`ENABLE_WEB_SEARCH=true`; the Secret is left in place.
+back to the model through the agentic loop. To disable search, upgrade without
+`global.webSearch.enabled=true`; the Secret is left in place.
 
 ### MCP server
 
-Praxis has one MCP connector, `mcp-server`, pointing at `MCP_SERVER_URL`.
+Praxis has one MCP connector, `mcp-server`, pointing at `global.mcp.serverUrl`.
 Requests use
 `tools: [{"type":"mcp","server_label":"<label>","connector_id":"mcp-server","require_approval":"never"}]`.
-Deploy one of these servers in `$NAMESPACE`:
+The chart installs the OpenShift MCP server by default and requires an operator
+serving `mcp.x-k8s.io/v1beta1`. Operators serving only `v1alpha1` are not supported
+by the chart-managed server; use an external MCP server instead.
 
-- Test server (default URL), used by `tests/mcp.sh`:
+Before installing the chart, enable the MCP Lifecycle Operator in your OpenShift
+AI cluster:
 
-  ```bash
-  oc -n "$NAMESPACE" apply -f infra/mcp/everything/deployment.yaml
-  bash ./scripts/deploy.sh
-  ```
+```bash
+oc patch datasciencecluster default-dsc --type=merge \
+  -p '{"spec":{"components":{"mcplifecycleoperator":{"managementState":"Managed"}}}}'
+oc wait datasciencecluster/default-dsc \
+  --for=condition=MCPLifecycleOperatorReady --timeout=300s
+```
 
-- OpenShift MCP Server from the RHOAI MCP catalogue, deployed through the MCP
-  Lifecycle Operator (requires the `mcplifecycleoperator` DataScienceCluster
-  component to be `Managed`):
+After installing the chart, wait for the server handshake:
 
-  ```bash
-  oc -n "$NAMESPACE" apply -f infra/mcp/openshift/mcpserver.yaml
-  oc -n "$NAMESPACE" wait mcpserver/openshift-mcp --for=condition=Verified --timeout=300s
-  MCP_SERVER_URL=http://openshift-mcp:8080/mcp bash ./scripts/deploy.sh
-  ```
+```bash
+oc -n "$NAMESPACE" wait mcpserver/openshift-mcp --for=condition=Verified --timeout=300s
+```
 
-  It uses the `core` toolset with `enabled_tools` limited to read tools plus
-  `pods_delete`, and a ServiceAccount bound to `view` in `$NAMESPACE` only, so it
-  can read pods, logs, events, and resources there but not Secrets or other
-  namespaces. `view` does not allow deleting pods; a namespace needs an extra
-  Role for that, as the [shop-outage demo](demos/shop-outage/README.md) adds.
-  Its NetworkPolicy admits only Praxis pods and the operator in
-  `redhat-ods-applications`. Anyone who can reach Praxis can use these tools.
-  `require_approval` is chosen by the caller, so it is not an access control;
-  RBAC is.
+It uses the `core` toolset with `enabled_tools` limited to read tools plus
+`pods_delete`, and a ServiceAccount bound to `view` in `$NAMESPACE` only, so it
+can read pods, logs, events, and resources there but not Secrets or other
+namespaces. `view` does not allow deleting pods; a namespace needs an extra
+Role for that, as the [shop-outage demo](demos/shop-outage/README.md) adds.
+Its NetworkPolicy admits only this release's Praxis pods and the operator in
+`redhat-ods-applications`. Anyone who can reach Praxis can use these tools.
+`require_approval` is chosen by the caller, so it is not an access control;
+RBAC is. `tests/mcp.sh` checks discovery and read-only pod access.
+
+For an external MCP server, set `openshiftMcp.enabled=false` and
+`global.mcp.serverUrl` to its URL. Only one release per namespace can own the
+fixed-name OpenShift MCP resources. For existing manually installed resources,
+see [Helm adoption](docs/configuration.md#openshift-mcp).
 
 ## Verify and access
 
@@ -221,20 +227,17 @@ and response artifacts remain in `.cache/` and should not be committed.
 
 ## Uninstall
 
-Use the same `NAMESPACE`, `RELEASE`, and `OGX_NAMESPACE` settings and cluster
-context as installation:
-
 ```bash
-bash ./scripts/cleanup.sh
+helm uninstall "$RELEASE" --namespace "$NAMESPACE" --wait
 ```
 
-This removes the Helm release, its OGX NetworkPolicy, and the in-repo
-PostgreSQL Deployment, Service, and NetworkPolicy. It is safe to rerun when
-resources are already absent. The PostgreSQL volume and its Secret are kept, so
-reinstalling restores stored Responses and Conversations; to delete them too:
+This removes Praxis, its NetworkPolicies (including the one in the OGX
+namespace), and the PostgreSQL Deployment and Service. The PostgreSQL volume
+and its Secret are kept, so reinstalling restores stored Responses and
+Conversations; to delete them too:
 
 ```bash
-PURGE_DATABASE=true bash ./scripts/cleanup.sh
+oc -n "$NAMESPACE" delete "pvc/$RELEASE-postgres" "secret/$RELEASE-postgres"
 ```
 
 The namespace, credential Secrets, existing OGX deployment, external databases,

@@ -9,7 +9,7 @@ the shop-outage demo, and always tear everything down again.
 
 | Workflow | Trigger | What it runs | Cluster | Secrets |
 |---|---|---|---|---|
-| `mvp.yml` (walking skeleton) | `workflow_dispatch` | showroom OGX provision → `scripts/deploy.sh` → `tests/smoke.sh` → teardown | shared ROSA | yes (Environment `cluster-e2e`) |
+| `mvp.yml` (walking skeleton) | `workflow_dispatch` | showroom OGX provision → `helm upgrade --install` → `tests/smoke.sh` → teardown | shared ROSA | yes (Environment `cluster-e2e`) |
 | `static.yml` *(planned)* | `pull_request`, push to `main` | shellcheck, yaml-lint, helm render checks | none | **no** |
 | `pr.yml` *(planned)* | `pull_request` | free tier only (static + secret-free smoke) | none | **no** |
 | `nightly.yml` *(planned)* | `schedule`, `workflow_dispatch` | full suite (`LEVEL=full tests/e2e.sh`) incl. demo | shared ROSA | yes (Environment `cluster-e2e`) |
@@ -60,9 +60,10 @@ praxis-agentic-apis does not install OGX. CI composes the two repos
 3. `"$scripts_dir/test.sh" hello` — health gate **before** switching OGX to
    unauthenticated praxis mode (`--set ogx.auth.enabled=false
    --set route.enabled=false`).
-4. `scripts/deploy.sh` — praxis-gateway is installed in front of OGX.
+4. `helm upgrade --install praxis-gateway charts/praxis-agentic-apis` —
+   praxis-gateway is installed in front of OGX.
 5. tests + demo.
-6. `if: always()` teardown: `scripts/cleanup.sh`, namespace deletion, then
+6. `if: always()` teardown: `helm uninstall`, namespace deletion, then
    showroom `unprovision.sh` + `cleanup.sh` — each step tracked independently
    so one failure cannot skip the rest.
 
@@ -94,11 +95,10 @@ test time rather than baked into the workflow.
 
 ## Image pinning
 
-The praxis-ai image is pinned by digest in `configs/common-values.yaml`.
-`scripts/deploy.sh` accepts overrides via `PRAXIS_IMAGE_REPO` / `_TAG` /
-`_DIGEST` (validated), and the `mvp.yml` dispatch input `praxis_image` threads
-through to them — a passed tag is resolved to a digest with `skopeo inspect`
-when available. This lets CI move between image sources (custom quay push →
+The praxis-ai image is pinned by digest in
+`charts/praxis-agentic-apis/values.yaml`. The `mvp.yml` dispatch input
+`praxis_image` overrides it through `praxis-gateway.image.*` values — a passed
+tag is resolved to a digest with `skopeo inspect` when available. This lets CI move between image sources (custom quay push →
 `ghcr.io/praxis-proxy/ai-experimental` once published) without workflow edits.
 
 The OGX side is pinned via the showroom action's `ogx_image` input when a
@@ -116,9 +116,11 @@ $ make render  # chart render dry-run (needs helm; no cluster writes)
 ```
 
 Tool versions are pinned in the `Makefile` (single source of truth — the
-workflow installs from there too). `make render` mirrors `scripts/deploy.sh`'s
-render path (envsubst → `helm template`) with cluster-neutral defaults and
-asserts the output is valid, non-empty YAML; override the
+workflow installs from there too). `make render` builds the dependencies of
+`charts/praxis-agentic-apis`, renders it with cluster-neutral defaults, and
+asserts the output is valid, non-empty YAML. Helm downloads `praxis-gateway`
+version `0.3.0` from `oci://ghcr.io/praxis-proxy/charts`.
+Override the
 `OGX_ENDPOINT` / `INFERENCE_HOST` / `INFERENCE_PORT` / `MCP_SERVER_URL` make
 variables to render other backends.
 
